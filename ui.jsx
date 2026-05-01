@@ -1,164 +1,137 @@
-// ─── Shared UI Components ──────────────────────────────────────────────────────
-export const C = {
-  bg:'#F4F1EB', surface:'#FFFFFF', surfaceAlt:'#EBE7DE', borderLight:'#EEE9E0',
-  border:'#DDD8CC', ink:'#1A2340', inkMid:'#3D4460', inkMuted:'#8A90A8',
-  gold:'#C4882A', terra:'#B84C2C', terraSoft:'rgba(184,76,44,0.10)',
-  jade:'#2A7D5C', jadeSoft:'rgba(42,125,92,0.12)',
-  sky:'#1A5CB4', skySoft:'rgba(26,92,180,0.10)',
-  amber:'#A0620A', amberSoft:'rgba(160,98,10,0.12)',
-  crimson:'#A8281C', crimsonSoft:'rgba(168,40,28,0.10)',
-  purple:'#5E30A0', teal:'#0A7B8A', white:'#FFFFFF',
-}
+import { useState } from 'react'
+import { supabase } from '../lib/supabase'
 
-export const DEPTS = {
-  bar:        { label:'Bar',         icon:'🍸', color:C.sky,    min:2 },
-  wijkloper:  { label:'Wijkloper',   icon:'🚶', color:C.purple, min:1 },
-  runner:     { label:'Runner',      icon:'⚡', color:C.terra,  min:1 },
-  keuken:     { label:'Keuken',      icon:'👨‍🍳', color:C.jade,   min:2 },
-  spoelkeuken:{ label:'Spoelkeuken', icon:'🫧', color:C.teal,   min:1 },
-}
+const C = { ink:'#1A2340', gold:'#C4882A', white:'#FFFFFF', surface:'#FFFFFF',
+  border:'#DDD8CC', inkMuted:'#8A90A8', jade:'#2A7D5C', crimson:'#A8281C' }
 
-export const CONTRACT_TYPES = {
-  vast:     { label:'Vast',     color:C.jade   },
-  oproep:   { label:'Oproep',   color:C.amber  },
-  min_max:  { label:'Min/Max',  color:C.sky    },
-  stagiair: { label:'Stagiair', color:C.purple },
-}
+export default function SetupPage() {
+  const [step, setStep] = useState(1)
+  const [form, setForm] = useState({
+    orgName: '', adminName: '', adminEmail: '', password: '', confirm: ''
+  })
+  const [loading, setLoading] = useState(false)
+  const [error, setError] = useState('')
+  const [done, setDone] = useState(false)
 
-export function Badge({ color, children, style = {} }) {
-  return (
-    <span style={{
-      display:'inline-flex', alignItems:'center', gap:4,
-      padding:'3px 9px', borderRadius:99,
-      background:color+'1A', color, fontSize:11, fontWeight:700, ...style
-    }}>{children}</span>
-  )
-}
+  const f = k => e => setForm(p => ({ ...p, [k]: e.target.value }))
 
-export function Card({ children, style = {}, onClick }) {
-  return (
-    <div onClick={onClick} style={{
-      background:C.surface, border:`1px solid ${C.border}`,
-      borderRadius:16, padding:20, ...style,
-      cursor:onClick?'pointer':undefined,
-    }}>{children}</div>
-  )
-}
+  async function handleCreate() {
+    if (form.password !== form.confirm) { setError('Wachtwoorden komen niet overeen'); return }
+    if (form.password.length < 8) { setError('Wachtwoord minimaal 8 tekens'); return }
+    setLoading(true); setError('')
+    try {
+      // 1. Create auth user
+      const { data: authData, error: authErr } = await supabase.auth.signUp({
+        email: form.adminEmail, password: form.password,
+        options: { data: { name: form.adminName } }
+      })
+      if (authErr) throw authErr
 
-export function Avatar({ name, color, size = 36 }) {
-  const initials = name?.split(' ').map(n=>n[0]).join('').slice(0,2).toUpperCase() || '?'
-  return (
-    <div style={{
-      width:size, height:size, borderRadius:Math.round(size/3),
-      background:color+'22', border:`2px solid ${color}`,
-      display:'flex', alignItems:'center', justifyContent:'center',
-      color, fontSize:size*.34, fontWeight:800, flexShrink:0,
-    }}>{initials}</div>
-  )
-}
+      // 2. Create organisation
+      const { data: org, error: orgErr } = await supabase
+        .from('organisations').insert({ name: form.orgName }).select().single()
+      if (orgErr) throw orgErr
 
-export function Toast({ msg }) {
-  return (
-    <div style={{
-      position:'fixed', bottom:28, left:'50%', transform:'translateX(-50%)',
-      background:C.ink, color:C.white, borderRadius:14, padding:'13px 28px',
-      fontWeight:700, fontSize:14, boxShadow:'0 8px 40px rgba(0,0,0,.2)',
-      zIndex:9999, animation:'slideUp .3s ease', whiteSpace:'nowrap',
-    }}>{msg}</div>
-  )
-}
+      // 3. Create admin staff record
+      const { error: staffErr } = await supabase.from('staff').insert({
+        org_id: org.id, auth_id: authData.user.id,
+        name: form.adminName, email: form.adminEmail,
+        is_admin: true, is_active: true,
+        contract_type: 'vast', contract_hours: 40,
+      })
+      if (staffErr) throw staffErr
 
-export function Spinner() {
-  return (
-    <div style={{
-      minHeight:'100vh', background:C.bg, display:'flex',
-      alignItems:'center', justifyContent:'center', flexDirection:'column', gap:16,
-    }}>
-      <div style={{ fontSize:40 }}>🍽</div>
-      <div style={{ color:C.inkMuted, fontSize:14 }}>Laden...</div>
+      // 4. Create default settings
+      await supabase.from('org_settings').insert({ org_id: org.id })
+
+      // 5. Create default shifts via function
+      await supabase.rpc('create_default_shifts', { p_org_id: org.id })
+
+      setDone(true)
+    } catch (e) {
+      setError(e.message)
+    }
+    setLoading(false)
+  }
+
+  const inp = (label, key, type='text', ph='') => (
+    <div style={{ marginBottom: 14 }}>
+      <div style={{ fontSize: 12, fontWeight: 700, color: 'rgba(255,255,255,0.5)', marginBottom: 6 }}>{label}</div>
+      <input type={type} value={form[key]} onChange={f(key)} placeholder={ph}
+        style={{ width: '100%', padding: '12px 14px', borderRadius: 12,
+          border: '1px solid rgba(255,255,255,0.12)', background: 'rgba(255,255,255,0.07)',
+          color: C.white, fontSize: 14, fontFamily: 'inherit', boxSizing: 'border-box' }}/>
     </div>
   )
-}
 
-export function WeekNav({ week, weeks, setWeek }) {
-  return (
-    <div style={{
-      display:'flex', alignItems:'center', gap:6, background:C.surfaceAlt,
-      borderRadius:12, padding:'5px 10px', border:`1px solid ${C.border}`,
-    }}>
-      <button onClick={() => setWeek(w => Math.max(0, w-1))} disabled={week===0}
-        style={{ border:'none', background:'transparent', color:week===0?C.inkMuted:C.ink,
-          padding:'3px 8px', fontSize:16, cursor:week===0?'not-allowed':'pointer',
-          opacity:week===0?0.3:1 }}>‹</button>
-      <span style={{ color:C.ink, fontWeight:700, fontSize:13, minWidth:136, textAlign:'center' }}>
-        {weeks[week]}
-      </span>
-      <button onClick={() => setWeek(w => Math.min(weeks.length-1, w+1))} disabled={week===weeks.length-1}
-        style={{ border:'none', background:'transparent', color:C.ink,
-          padding:'3px 8px', fontSize:16, cursor:week===weeks.length-1?'not-allowed':'pointer',
-          opacity:week===weeks.length-1?0.3:1 }}>›</button>
+  if (done) return (
+    <div style={{ minHeight:'100vh', background:C.ink, display:'flex', alignItems:'center',
+      justifyContent:'center', padding:24, fontFamily:"'DM Sans','Segoe UI',sans-serif" }}>
+      <div style={{ textAlign:'center', maxWidth:380 }}>
+        <div style={{ fontSize:60, marginBottom:20 }}>✅</div>
+        <div style={{ color:C.white, fontSize:22, fontWeight:900, marginBottom:10 }}>Restaurant aangemaakt!</div>
+        <div style={{ color:'rgba(255,255,255,0.5)', fontSize:14, marginBottom:24, lineHeight:1.6 }}>
+          Controleer je e-mail ({form.adminEmail}) om je account te bevestigen, dan kun je inloggen.
+        </div>
+        <a href="/" style={{ display:'block', padding:'14px', background:C.gold,
+          color:C.white, borderRadius:12, textDecoration:'none', fontWeight:700, fontSize:15 }}>
+          Naar inloggen
+        </a>
+      </div>
     </div>
   )
-}
 
-export function Input({ label, value, onChange, type='text', placeholder, min, max, step, prefix, style={} }) {
   return (
-    <div style={{ marginBottom:14 }}>
-      {label && <div style={{ fontSize:12, fontWeight:700, color:C.inkMid, marginBottom:5 }}>{label}</div>}
-      <div style={{ position:'relative' }}>
-        {prefix && <span style={{ position:'absolute', left:12, top:'50%',
-          transform:'translateY(-50%)', color:C.inkMuted, fontSize:14 }}>{prefix}</span>}
-        <input type={type} value={value} onChange={onChange} placeholder={placeholder}
-          min={min} max={max} step={step}
-          style={{ width:'100%', padding:`10px ${prefix?'36px':'12px'} 10px 12px`,
-            borderRadius:10, border:`1px solid ${C.border}`, fontSize:14,
-            fontFamily:'inherit', color:C.ink, boxSizing:'border-box', ...style }}/>
+    <div style={{ minHeight:'100vh', background:C.ink, display:'flex', flexDirection:'column',
+      alignItems:'center', justifyContent:'center', padding:24,
+      fontFamily:"'DM Sans','Segoe UI',sans-serif" }}>
+      <div style={{ textAlign:'center', marginBottom:32 }}>
+        <div style={{ width:64, height:64, borderRadius:20, background:C.gold,
+          fontSize:28, margin:'0 auto 12px', display:'flex', alignItems:'center',
+          justifyContent:'center', boxShadow:`0 0 40px ${C.gold}55` }}>🍽</div>
+        <div style={{ color:C.white, fontSize:26, fontWeight:900 }}>RoosterAI instellen</div>
+        <div style={{ color:'rgba(255,255,255,0.3)', fontSize:12, marginTop:4 }}>
+          Stap {step} van 2
+        </div>
+      </div>
+
+      <div style={{ width:'100%', maxWidth:380 }}>
+        {step === 1 && <>
+          <div style={{ color:'rgba(255,255,255,0.7)', fontWeight:700, marginBottom:16 }}>Restaurant gegevens</div>
+          {inp('NAAM RESTAURANT', 'orgName', 'text', 'Bijv. Restaurant De Smidse')}
+          <button onClick={() => { if (!form.orgName) return; setStep(2) }}
+            style={{ width:'100%', padding:'14px', borderRadius:12, border:'none',
+              background:C.gold, color:C.white, fontSize:15, fontWeight:700,
+              cursor:'pointer', fontFamily:'inherit' }}>
+            Volgende →
+          </button>
+        </>}
+
+        {step === 2 && <>
+          <div style={{ color:'rgba(255,255,255,0.7)', fontWeight:700, marginBottom:16 }}>Admin account</div>
+          {inp('JOUW NAAM', 'adminName', 'text', 'Voornaam achternaam')}
+          {inp('E-MAILADRES', 'adminEmail', 'email', 'naam@restaurant.nl')}
+          {inp('WACHTWOORD', 'password', 'password', 'Minimaal 8 tekens')}
+          {inp('HERHAAL WACHTWOORD', 'confirm', 'password', '')}
+          {error && <div style={{ background:'rgba(168,40,28,0.2)', border:'1px solid rgba(168,40,28,0.4)',
+            borderRadius:10, padding:'10px 14px', marginBottom:16, color:'#FF8C72', fontSize:13 }}>
+            {error}
+          </div>}
+          <div style={{ display:'flex', gap:10 }}>
+            <button onClick={() => setStep(1)} style={{ flex:1, padding:'14px', borderRadius:12,
+              border:'1px solid rgba(255,255,255,0.15)', background:'transparent',
+              color:'rgba(255,255,255,0.6)', fontSize:14, fontWeight:700, cursor:'pointer', fontFamily:'inherit' }}>
+              ← Terug
+            </button>
+            <button onClick={handleCreate} disabled={loading} style={{ flex:2, padding:'14px',
+              borderRadius:12, border:'none', background:loading?'rgba(255,255,255,0.2)':C.jade,
+              color:C.white, fontSize:15, fontWeight:700,
+              cursor:loading?'not-allowed':'pointer', fontFamily:'inherit' }}>
+              {loading ? 'Aanmaken...' : '✓ Restaurant aanmaken'}
+            </button>
+          </div>
+        </>}
       </div>
     </div>
   )
 }
-
-export function Select({ label, value, onChange, children }) {
-  return (
-    <div style={{ marginBottom:14 }}>
-      {label && <div style={{ fontSize:12, fontWeight:700, color:C.inkMid, marginBottom:5 }}>{label}</div>}
-      <select value={value} onChange={onChange} style={{
-        width:'100%', padding:'10px 12px', borderRadius:10,
-        border:`1px solid ${C.border}`, fontSize:14,
-        fontFamily:'inherit', color:C.ink, background:C.white,
-      }}>{children}</select>
-    </div>
-  )
-}
-
-// Button style helper
-export const btn = (overrides={}) => ({
-  border:'none', borderRadius:9, fontWeight:700, cursor:'pointer',
-  fontFamily:'inherit', transition:'all .18s', ...overrides,
-})
-
-// Week utilities
-export function getWeekDates(mondayDate) {
-  const d = new Date(mondayDate)
-  return Array.from({ length:7 }, (_, i) => {
-    const day = new Date(d)
-    day.setDate(d.getDate() + i)
-    return day.toISOString().split('T')[0]
-  })
-}
-
-export function getMondayOfWeek(date = new Date()) {
-  const d = new Date(date)
-  const day = d.getDay()
-  const diff = (day === 0 ? -6 : 1 - day)
-  d.setDate(d.getDate() + diff)
-  return d.toISOString().split('T')[0]
-}
-
-export function formatDate(dateStr) {
-  const d = new Date(dateStr)
-  return d.toLocaleDateString('nl-NL', { day:'numeric', month:'short' })
-}
-
-export const DAYS = ['Ma','Di','Wo','Do','Vr','Za','Zo']
-export const DAYS_FULL = ['Maandag','Dinsdag','Woensdag','Donderdag','Vrijdag','Zaterdag','Zondag']
