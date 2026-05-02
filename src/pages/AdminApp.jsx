@@ -1,4 +1,4 @@
-import { useState, useEffect, useMemo, useCallback } from 'react'
+import { useState, useEffect, useMemo, useCallback, useRef } from 'react'
 import { useAuth } from '../hooks/useAuth'
 import { supabase } from '../lib/supabase'
 import { generateSchedule, calcFinancials } from '../lib/scheduler'
@@ -48,6 +48,8 @@ export default function AdminApp() {
   const [overtimeLog, setOvertimeLog] = useState({})
   const [settings, setSettings] = useState({})
   const [generating, setGenerating] = useState(false)
+  const [recurringPeaks, setRecurringPeaks] = useState({ 4:4, 5:7, 6:2 })
+  const [scheduleMode, setScheduleMode] = useState(75) // 0=min cost, 100=max quality // Fri eve, Sat all, Sun midday
 
   const weeks = useMemo(() => getWeeks(), [])
   const currentWeek = weeks[weekIdx]
@@ -186,13 +188,14 @@ export default function AdminApp() {
         shiftTemplates,
         templateSlots,
         peakMoments,
+        recurringPeaks,
         holidays,
         availabilityPatterns: availPatterns,
         availabilityOverrides: availOverrides,
         leaveRequests,
         capacityScores: capacities,
         weekDates: currentWeek.dates,
-        settings,
+        settings: { ...settings, scheduleMode },
         otHistory: overtimeLog,
       })
 
@@ -298,6 +301,7 @@ export default function AdminApp() {
     { id:'template',  icon:'🗓',  l:'Template' },
     { id:'aanvragen', icon:'🔔',  l:'Aanvragen', badge: notifications },
     { id:'personeel', icon:'👥',  l:'Personeel' },
+    { id:'ziekte',    icon:'🤒',  l:'Ziekte' },
     { id:'financieel',icon:'💶',  l:'Financieel' },
     { id:'instellingen',icon:'⚙️',l:'Instellingen' },
   ]
@@ -389,7 +393,15 @@ export default function AdminApp() {
                   </div>
                 </div>
               </div>
-              <div style={{ display:'flex', gap:8 }}>
+              <div style={{ display:'flex', gap:8, alignItems:'center', flexWrap:'wrap' }}>
+                <div style={{ background:'rgba(255,255,255,0.5)', borderRadius:10, padding:'6px 12px' }}>
+                  <div style={{ fontSize:10, fontWeight:700, color:C.inkMid, marginBottom:3 }}>
+                    {scheduleMode <= 33 ? '💰 Min. kosten' : scheduleMode <= 66 ? '⚖️ Gebalanceerd' : '⭐ Max. kwaliteit'}
+                  </div>
+                  <input type="range" min={0} max={100} value={scheduleMode}
+                    onChange={e => setScheduleMode(+e.target.value)}
+                    style={{ width:90, accentColor:C.terra, cursor:'pointer', height:5 }}/>
+                </div>
                 <button onClick={handleGenerate} disabled={generating}
                   style={{ ...btn(), background:generating?C.inkMuted:C.terra, color:C.white,
                     padding:'8px 16px', fontSize:13, borderRadius:10 }}>
@@ -474,6 +486,7 @@ export default function AdminApp() {
           <TemplateTab
             templateSlots={templateSlots} shiftTemplates={shiftTemplates}
             peakMoments={peakMoments} holidays={holidays}
+            recurringPeaks={recurringPeaks} setRecurringPeaks={setRecurringPeaks}
             orgId={orgId} onReload={loadAll} show={show}
           />
         )}
@@ -498,6 +511,18 @@ export default function AdminApp() {
         )}
 
         {/* ── FINANCIEEL ── */}
+        {tab === 'ziekte' && (
+          <ZiekteTab
+            allStaff={allStaff}
+            currentSchedule={currentSchedule}
+            currentWeek={currentWeek}
+            shiftTemplates={shiftTemplates}
+            orgId={orgId}
+            onReload={loadAll}
+            show={show}
+          />
+        )}
+
         {tab === 'financieel' && (
           <FinancieelTab
             fin={fin} allStaff={allStaff}
@@ -653,7 +678,7 @@ function RoosterTab({ allStaff, currentSchedule, currentWeek, shiftTemplates, pe
                                 boxShadow:'0 8px 30px rgba(0,0,0,.12)', zIndex:20, minWidth:150 }}>
                                 <div onClick={() => { onCellChange(s.id, di, null); setEditCell(null) }}
                                   style={{ padding:'6px 10px', borderRadius:7, cursor:'pointer', color:C.inkMuted, fontSize:12, fontWeight:600 }}>— Vrij</div>
-                                {Object.keys(shiftTemplates).map(n => {
+                                {Object.keys(shiftTemplates).sort((a,b) => { const ta = shiftTemplates[a]?.start_time||''; const tb = shiftTemplates[b]?.start_time||''; return ta.localeCompare(tb); }).map(n => {
                                   const t = shiftTemplates[n]
                                   return (
                                     <div key={n} onClick={() => { onCellChange(s.id, di, n); setEditCell(null) }}
@@ -763,28 +788,45 @@ function HistorischTab({ weeks, rosters, assignments, allStaff, shiftTemplates, 
   )
 }
 
-function TemplateTab({ templateSlots, shiftTemplates, peakMoments, holidays, orgId, onReload, show }) {
+function TemplateTab({ templateSlots: initialSlots, shiftTemplates, peakMoments, holidays, recurringPeaks, setRecurringPeaks, orgId, onReload, show }) {
   const [dayTab, setDayTab] = useState(0)
   const [newPeak, setNewPeak] = useState({ date:'', label:'', slots:7 })
   const [newHoliday, setNewHoliday] = useState({ date:'', name:'', is_closed:true })
+  // recurringPeaks comes from AdminApp props
+  const [localSlots, setLocalSlots] = useState(initialSlots)
+
+  // Keep localSlots in sync when parent reloads (e.g. first load)
+  const prevInitial = useRef(initialSlots)
+  useEffect(() => {
+    if (prevInitial.current !== initialSlots) {
+      prevInitial.current = initialSlots
+      setLocalSlots(initialSlots)
+    }
+  }, [initialSlots])
+
+  // Use localSlots instead of templateSlots throughout
+  const templateSlots = localSlots
 
   async function addSlot(dk) {
-    await supabase.from('template_slots').insert({
+    const newSlot = {
       org_id: orgId, day_of_week: dayTab, dept: dk,
-      shift_name: Object.keys(shiftTemplates)[0] || 'Ochtend',
+      shift_name: (Object.keys(shiftTemplates).sort((a,b) => { const ta = shiftTemplates[a]?.start_time||''; const tb = shiftTemplates[b]?.start_time||''; return ta.localeCompare(tb); }))[0] || 'Ochtend',
       count: 1, is_recurring: true,
-    })
-    onReload(); show('✓ Slot toegevoegd')
+    }
+    const { data } = await supabase.from('template_slots').insert(newSlot).select().single()
+    if (data) setLocalSlots(ls => [...ls, data])
+    show('✓ Slot toegevoegd')
   }
 
   async function updateSlot(id, changes) {
     await supabase.from('template_slots').update(changes).eq('id', id)
-    onReload()
-  }
+    setLocalSlots(ls => ls.map(s => s.id === id ? { ...s, ...changes } : s))
+    }
 
   async function removeSlot(id) {
     await supabase.from('template_slots').delete().eq('id', id)
-    onReload(); show('✓ Slot verwijderd')
+    setLocalSlots(ls => ls.filter(s => s.id !== id))
+    show('✓ Slot verwijderd')
   }
 
   async function addPeak() {
@@ -824,7 +866,41 @@ function TemplateTab({ templateSlots, shiftTemplates, peakMoments, holidays, org
 
       {/* Slot editor */}
       <Card style={{ padding:20 }}>
-        <div style={{ fontWeight:800, fontSize:15, marginBottom:16 }}>{DAYS_FULL[dayTab]}</div>
+        <div style={{ display:'flex', justifyContent:'space-between', alignItems:'center', marginBottom:16, flexWrap:'wrap', gap:8 }}>
+          <div style={{ fontWeight:800, fontSize:15 }}>{DAYS_FULL[dayTab]}</div>
+          <div style={{ display:'flex', gap:6, flexWrap:'wrap' }}>
+            <div style={{ fontSize:11, color:C.inkMuted, alignSelf:'center' }}>Kopieer van:</div>
+            {DAYS_FULL.map((d, di) => di !== dayTab && (
+              <button key={di} onClick={async () => {
+                // Get slots from source day using localSlots
+                const sourceSlots = localSlots.filter(s => s.is_recurring && s.day_of_week === di)
+                if (!sourceSlots.length) { show(`Geen slots op ${d}`); return }
+                // Delete existing slots for target day from DB
+                const targetSlots = localSlots.filter(s => s.is_recurring && s.day_of_week === dayTab)
+                await Promise.all(targetSlots.map(s =>
+                  supabase.from('template_slots').delete().eq('id', s.id)
+                ))
+                // Insert copies for target day in DB
+                const inserts = sourceSlots.map(s => ({
+                  org_id: orgId, day_of_week: dayTab,
+                  dept: s.dept, shift_name: s.shift_name,
+                  count: s.count, is_recurring: true,
+                }))
+                const { data: newSlots } = await supabase
+                  .from('template_slots').insert(inserts).select()
+                // Update local state with DB-returned rows (includes real IDs)
+                setLocalSlots(ls => [
+                  ...ls.filter(s => !(s.is_recurring && s.day_of_week === dayTab)),
+                  ...(newSlots || [])
+                ])
+                show(`✓ ${DAYS_FULL[dayTab]} gekopieerd van ${d}`)
+              }} style={{ ...btn(), background:C.surfaceAlt, color:C.inkMid,
+                border:`1px solid ${C.border}`, padding:'5px 10px', fontSize:11, borderRadius:7 }}>
+                {DAYS[di]}
+              </button>
+            ))}
+          </div>
+        </div>
         {DEPT_KEYS.map(dk => {
           const dept = DEPTS[dk]
           const slots = daySlots.filter(s => s.dept === dk)
@@ -849,7 +925,7 @@ function TemplateTab({ templateSlots, shiftTemplates, peakMoments, holidays, org
                   <select value={slot.shift_name}
                     onChange={e => updateSlot(slot.id, { shift_name: e.target.value })}
                     style={{ flex:2, padding:'7px 10px', borderRadius:8, border:`1px solid ${C.border}`, fontSize:13, color:C.ink }}>
-                    {Object.keys(shiftTemplates).map(n => {
+                    {Object.keys(shiftTemplates).sort((a,b) => { const ta = shiftTemplates[a]?.start_time||''; const tb = shiftTemplates[b]?.start_time||''; return ta.localeCompare(tb); }).map(n => {
                       const t = shiftTemplates[n]
                       return <option key={n} value={n}>{n} ({t.start_time}–{t.end_time})</option>
                     })}
@@ -875,7 +951,44 @@ function TemplateTab({ templateSlots, shiftTemplates, peakMoments, holidays, org
       {/* Peak moments */}
       <Card style={{ padding:20 }}>
         <div style={{ fontWeight:800, fontSize:15, marginBottom:4 }}>🔥 Piek momenten</div>
-        <div style={{ color:C.inkMuted, fontSize:13, marginBottom:16 }}>Specifieke datums waarop extra personeel wordt ingeroosterd</div>
+        <div style={{ color:C.inkMuted, fontSize:13, marginBottom:16 }}>Vaste weekdag-pieken gelden elke week. Datum-specifieke pieken overschrijven voor die dag.</div>
+
+        {/* Vaste weekdag pieken */}
+        <div style={{ fontWeight:700, fontSize:13, color:C.inkMid, marginBottom:10 }}>VASTE WEEKDAG-PIEKEN</div>
+        {[
+          { day:'Vrijdag',  di:4, label:'Avond (17:00–sluit)', slots:4 },
+          { day:'Zaterdag', di:5, label:'Hele dag',            slots:7 },
+          { day:'Zondag',   di:6, label:'Middag (12:00–16:00)',slots:2 },
+        ].map(({ day, di, label, slots }) => {
+          const active = recurringPeaks[di] !== undefined
+          return (
+            <div key={di} style={{ display:'flex', alignItems:'center', justifyContent:'space-between',
+              padding:'10px 12px', background:active ? C.crimsonSoft : C.surfaceAlt,
+              borderRadius:10, marginBottom:6, border:`1px solid ${active ? C.crimson+'44' : C.border}` }}>
+              <div>
+                <div style={{ fontWeight:700, fontSize:13, color:active ? C.crimson : C.ink }}>
+                  {active ? '🔥' : '○'} {day}
+                </div>
+                <div style={{ color:C.inkMuted, fontSize:11 }}>{label}</div>
+              </div>
+              <button onClick={() => setRecurringPeaks(rp => {
+                const n = { ...rp }
+                if (active) delete n[di]
+                else n[di] = slots
+                return n
+              })} style={{ ...btn(),
+                background: active ? C.crimson : C.jade+'18',
+                color: active ? C.white : C.jade,
+                border: `1px solid ${active ? C.crimson : C.jade+'44'}`,
+                padding:'6px 14px', fontSize:12, borderRadius:9 }}>
+                {active ? 'Uitzetten' : 'Aanzetten'}
+              </button>
+            </div>
+          )
+        })}
+
+        {/* Datum-specifieke pieken */}
+        <div style={{ fontWeight:700, fontSize:13, color:C.inkMid, marginBottom:10, marginTop:16 }}>DATUM-SPECIFIEKE PIEKEN</div>
         <div style={{ display:'flex', gap:8, marginBottom:12, flexWrap:'wrap' }}>
           <input type="date" value={newPeak.date} onChange={e => setNewPeak(p => ({...p, date:e.target.value}))}
             style={{ flex:1, padding:'9px 12px', borderRadius:10, border:`1px solid ${C.border}`, fontSize:13, minWidth:130 }}/>
@@ -883,9 +996,9 @@ function TemplateTab({ templateSlots, shiftTemplates, peakMoments, holidays, org
             placeholder="Omschrijving (bijv. Oud & Nieuw)"
             style={{ flex:2, padding:'9px 12px', borderRadius:10, border:`1px solid ${C.border}`, fontSize:13, minWidth:150 }}/>
           <button onClick={addPeak} style={{ ...btn(), background:C.crimson+'18', color:C.crimson,
-            border:`1px solid ${C.crimson}44`, padding:'9px 14px', fontSize:13, borderRadius:10 }}>＋ Toevoegen</button>
+            border:`1px solid ${C.crimson}44`, padding:'9px 14px', fontSize:13, borderRadius:10 }}>＋ Datum toevoegen</button>
         </div>
-        {peakMoments.length === 0 && <div style={{ color:C.inkMuted, fontSize:12, fontStyle:'italic' }}>Nog geen piek momenten</div>}
+        {peakMoments.length === 0 && <div style={{ color:C.inkMuted, fontSize:12, fontStyle:'italic' }}>Nog geen datum-specifieke pieken</div>}
         {peakMoments.map(p => (
           <div key={p.id} style={{ display:'flex', justifyContent:'space-between', alignItems:'center',
             padding:'9px 12px', background:C.surfaceAlt, borderRadius:10, marginBottom:6 }}>
@@ -983,6 +1096,7 @@ function PersoneelTab({ allStaff, capacities, orgId, onReload, show, shiftTempla
   const [modal, setModal] = useState(false)
   const [editId, setEditId] = useState(null)
   const [capId, setCapId] = useState(null)
+  const [localScores, setLocalScores] = useState({})
   const emptyForm = { name:'', email:'', password:'', role:'', color:'#1D4ED8',
     contract_type:'vast', contract_hours:20, min_hours:8, max_hours:32, hourly_rate:12, depts:[] }
   const [form, setForm] = useState(emptyForm)
@@ -998,6 +1112,7 @@ function PersoneelTab({ allStaff, capacities, orgId, onReload, show, shiftTempla
           contract_type:form.contract_type, contract_hours:form.contract_hours,
           min_hours:form.min_hours, max_hours:form.max_hours,
           hourly_rate:form.hourly_rate, depts:form.depts,
+          pref_min_days:form.pref_min_days||1, pref_max_days:form.pref_max_days||5,
         }).eq('id', editId)
         show(`✓ ${form.name} bijgewerkt`)
       } else {
@@ -1102,7 +1217,7 @@ function PersoneelTab({ allStaff, capacities, orgId, onReload, show, shiftTempla
                     <div style={{ fontWeight:700, fontSize:13, marginBottom:10, color:C.inkMid }}>Capaciteitsscores (1–10)</div>
                     {(s.depts || []).map(dk => {
                       const dept = DEPTS[dk]
-                      const score = capacities[s.id]?.[dk] ?? 5
+                      const score = (localScores[s.id]?.[dk] !== undefined ? localScores[s.id]?.[dk] : capacities[s.id]?.[dk]) ?? 5
                       return (
                         <div key={dk} style={{ marginBottom:10 }}>
                           <div style={{ display:'flex', justifyContent:'space-between', marginBottom:4 }}>
@@ -1110,11 +1225,32 @@ function PersoneelTab({ allStaff, capacities, orgId, onReload, show, shiftTempla
                             <span style={{ fontWeight:800, color:score>=8?C.jade:score>=5?dept?.color:C.crimson }}>{score}/10</span>
                           </div>
                           <input type="range" min={1} max={10} value={score}
-                            onChange={async e => {
+                            onChange={e => {
+                              // Update local display only - no re-render of parent
+                              setLocalScores(ls => ({
+                                ...ls,
+                                [s.id]: { ...(ls[s.id]||{}), [dk]: +e.target.value }
+                              }))
+                            }}
+                            onMouseUp={async e => {
+                              const val = +e.target.value
+                              // Update local capacities display
+                              setLocalScores(ls => ({
+                                ...ls,
+                                [s.id]: { ...(ls[s.id]||{}), [dk]: val }
+                              }))
+                              // Save to DB without triggering full reload
                               await supabase.from('capacity_scores').upsert({
-                                staff_id:s.id, dept:dk, score:+e.target.value
+                                staff_id:s.id, dept:dk, score:val
                               }, { onConflict:'staff_id,dept' })
-                              onReload()
+                              show('✓ Score opgeslagen')
+                            }}
+                            onTouchEnd={async e => {
+                              const val = localScores[s.id]?.[dk] ?? capacities[s.id]?.[dk] ?? 5
+                              await supabase.from('capacity_scores').upsert({
+                                staff_id:s.id, dept:dk, score:val
+                              }, { onConflict:'staff_id,dept' })
+                              show('✓ Score opgeslagen')
                             }}
                             style={{ width:'100%', accentColor:dept?.color, cursor:'pointer', height:6 }}/>
                         </div>
@@ -1188,6 +1324,43 @@ function PersoneelTab({ allStaff, capacities, orgId, onReload, show, shiftTempla
                 min={8} max={50} step={0.25}
                 style={{ width:'100%', padding:'10px 12px', borderRadius:10, border:`1px solid ${C.border}`, fontSize:14, boxSizing:'border-box' }}/>
             </div>
+            {editId && <div style={{ marginBottom:14 }}>
+              <div style={{ fontSize:12, fontWeight:700, color:C.inkMid, marginBottom:5 }}>Nieuw wachtwoord instellen</div>
+              <div style={{ display:'flex', gap:8 }}>
+                <input type="password" value={form.password||''} onChange={e => setForm(f=>({...f,password:e.target.value}))}
+                  placeholder="Laat leeg om niet te wijzigen"
+                  style={{ flex:1, padding:'10px 12px', borderRadius:10, border:`1px solid ${C.border}`,
+                    fontSize:14, fontFamily:'inherit', color:C.ink, boxSizing:'border-box' }}/>
+              </div>
+              <div style={{ fontSize:11, color:C.inkMuted, marginTop:4 }}>Vul een nieuw wachtwoord in en klik Opslaan om het bij te werken</div>
+            </div>}
+            <div style={{ marginBottom:14 }}>
+              <div style={{ fontSize:12, fontWeight:700, color:C.inkMid, marginBottom:8 }}>Voorkeur werkdagen per week</div>
+              <div style={{ display:'flex', gap:10, alignItems:'center' }}>
+                <div style={{ flex:1 }}>
+                  <div style={{ fontSize:11, color:C.inkMuted, marginBottom:4 }}>Minimum</div>
+                  <div style={{ display:'flex', alignItems:'center', gap:6, background:'#EBE7DE', borderRadius:8, padding:'4px 8px' }}>
+                    <button onClick={() => setForm(f=>({...f,pref_min_days:Math.max(1,(f.pref_min_days||1)-1)}))}
+                      style={{ ...btn(), background:'transparent', color:C.ink, padding:'0 6px', fontSize:16 }}>−</button>
+                    <span style={{ fontWeight:800, fontSize:15, minWidth:20, textAlign:'center' }}>{form.pref_min_days||1}</span>
+                    <button onClick={() => setForm(f=>({...f,pref_min_days:Math.min(f.pref_max_days||5,(f.pref_min_days||1)+1)}))}
+                      style={{ ...btn(), background:'transparent', color:C.ink, padding:'0 6px', fontSize:16 }}>＋</button>
+                  </div>
+                </div>
+                <div style={{ color:C.inkMuted, fontSize:18, paddingTop:16 }}>–</div>
+                <div style={{ flex:1 }}>
+                  <div style={{ fontSize:11, color:C.inkMuted, marginBottom:4 }}>Maximum</div>
+                  <div style={{ display:'flex', alignItems:'center', gap:6, background:'#EBE7DE', borderRadius:8, padding:'4px 8px' }}>
+                    <button onClick={() => setForm(f=>({...f,pref_max_days:Math.max(f.pref_min_days||1,(f.pref_max_days||5)-1)}))}
+                      style={{ ...btn(), background:'transparent', color:C.ink, padding:'0 6px', fontSize:16 }}>−</button>
+                    <span style={{ fontWeight:800, fontSize:15, minWidth:20, textAlign:'center' }}>{form.pref_max_days||5}</span>
+                    <button onClick={() => setForm(f=>({...f,pref_max_days:Math.min(7,(f.pref_max_days||5)+1)}))}
+                      style={{ ...btn(), background:'transparent', color:C.ink, padding:'0 6px', fontSize:16 }}>＋</button>
+                  </div>
+                </div>
+              </div>
+              <div style={{ fontSize:11, color:C.inkMuted, marginTop:6 }}>Zachte regel — generator probeert dit te respecteren</div>
+            </div>
             <div style={{ marginBottom:14 }}>
               <div style={{ fontSize:12, fontWeight:700, color:C.inkMid, marginBottom:8 }}>Afdelingen *</div>
               <div style={{ display:'flex', gap:6, flexWrap:'wrap' }}>
@@ -1223,6 +1396,181 @@ function PersoneelTab({ allStaff, capacities, orgId, onReload, show, shiftTempla
                 {editId ? 'Opslaan' : 'Aanmaken'}
               </button>
             </div>
+          </div>
+        </div>
+      )}
+    </div>
+  )
+}
+
+function ZiekteTab({ allStaff, currentSchedule, currentWeek, shiftTemplates, orgId, onReload, show }) {
+  const [openShifts, setOpenShifts] = useState([])
+  const [sickModal, setSickModal] = useState(false)
+  const [sickForm, setSickForm] = useState({ staffId:'', di:0 })
+  const [claimModal, setClaimModal] = useState(null)
+
+  useEffect(() => { loadOpenShifts() }, [currentWeek.monday])
+
+  async function loadOpenShifts() {
+    const { data } = await supabase.from('open_shifts')
+      .select('*, claimed_by:staff!claimed_by_id(name,color)')
+      .eq('org_id', orgId)
+      .gte('date', currentWeek.dates[0])
+      .lte('date', currentWeek.dates[6])
+    setOpenShifts(data || [])
+  }
+
+  async function reportSick() {
+    const s = allStaff.find(x => x.id === sickForm.staffId)
+    if (!s) return
+    const date = currentWeek.dates[sickForm.di]
+    const shiftName = currentSchedule[sickForm.staffId]?.[sickForm.di]
+    // Remove from roster
+    const { data: roster } = await supabase.from('rosters')
+      .select('id').eq('org_id', orgId).eq('week_start', currentWeek.monday).single()
+    if (roster) {
+      await supabase.from('roster_assignments').delete()
+        .eq('roster_id', roster.id).eq('staff_id', sickForm.staffId).eq('date', date)
+    }
+    // Create open shift
+    await supabase.from('open_shifts').insert({
+      org_id: orgId, date, shift_name: shiftName,
+      original_staff_id: sickForm.staffId, status: 'open'
+    })
+    setSickModal(false); onReload(); loadOpenShifts()
+    show(`✓ ${s.name} ziekgemeld — dienst staat open voor collega's`)
+  }
+
+  async function approveClaimShift(openShiftId, staffId) {
+    const os = openShifts.find(x => x.id === openShiftId)
+    if (!os) return
+    // Assign to new staff
+    const { data: roster } = await supabase.from('rosters')
+      .select('id').eq('org_id', orgId).eq('week_start', currentWeek.monday).single()
+    if (roster) {
+      await supabase.from('roster_assignments').upsert({
+        roster_id: roster.id, staff_id: staffId,
+        date: os.date, shift_name: os.shift_name
+      }, { onConflict: 'roster_id,staff_id,date' })
+    }
+    await supabase.from('open_shifts').update({ status:'filled', claimed_by_id: staffId }).eq('id', openShiftId)
+    setClaimModal(null); onReload(); loadOpenShifts()
+    show('✓ Dienst toegewezen!')
+  }
+
+  const scheduledStaff = allStaff.filter(s => 
+    currentSchedule[s.id]?.some(sh => sh !== null)
+  )
+
+  return (
+    <div style={{ display:'flex', flexDirection:'column', gap:14 }}>
+      <div style={{ display:'flex', justifyContent:'space-between', alignItems:'center', flexWrap:'wrap', gap:10 }}>
+        <div style={{ fontWeight:900, fontSize:20, color:C.ink }}>🤒 Ziekte & Open diensten</div>
+        <button onClick={() => setSickModal(true)}
+          style={{ ...btn(), background:C.crimson, color:C.white, padding:'10px 18px', fontSize:13, borderRadius:11 }}>
+          🤒 Medewerker ziekmelden
+        </button>
+      </div>
+
+      {/* Open shifts */}
+      {openShifts.length === 0
+        ? <Card style={{ textAlign:'center', padding:40 }}>
+            <div style={{ fontSize:36, marginBottom:8 }}>✅</div>
+            <div style={{ color:C.inkMuted }}>Geen open diensten deze week</div>
+          </Card>
+        : openShifts.map(os => {
+          const origStaff = allStaff.find(s => s.id === os.original_staff_id)
+          const shift = shiftTemplates[os.shift_name]
+          const available = allStaff.filter(s => 
+            s.id !== os.original_staff_id && !currentSchedule[s.id]?.[currentWeek.dates.indexOf(os.date)]
+          )
+          return (
+            <Card key={os.id} style={{ padding:'14px 16px', border:`1px solid ${os.status==='filled'?C.jade:C.crimson}44`,
+              background:os.status==='filled'?C.jadeSoft:C.crimsonSoft }}>
+              <div style={{ display:'flex', justifyContent:'space-between', alignItems:'flex-start', flexWrap:'wrap', gap:8 }}>
+                <div>
+                  <div style={{ display:'flex', alignItems:'center', gap:8, marginBottom:4 }}>
+                    <Badge color={os.status==='filled'?C.jade:C.crimson}>
+                      {os.status==='filled'?'✓ Ingevuld':'🔓 Open'}
+                    </Badge>
+                    <span style={{ fontWeight:700, color:C.ink }}>{os.date}</span>
+                    <span style={{ color:C.inkMuted, fontSize:12 }}>{os.shift_name} {shift?`(${shift.start_time}–${shift.end_time})`:''}</span>
+                  </div>
+                  {origStaff && <div style={{ color:C.inkMuted, fontSize:12 }}>
+                    Origineel: {origStaff.name} — ziek
+                  </div>}
+                  {os.status==='filled' && os.claimed_by && <div style={{ color:C.jade, fontSize:12, fontWeight:600 }}>
+                    Overgenomen door: {os.claimed_by.name}
+                  </div>}
+                </div>
+                {os.status === 'open' && (
+                  <button onClick={() => setClaimModal(os)}
+                    style={{ ...btn(), background:C.jade, color:C.white, padding:'8px 16px', fontSize:13, borderRadius:10 }}>
+                    Toewijzen aan collega
+                  </button>
+                )}
+              </div>
+            </Card>
+          )
+        })
+      }
+
+      {/* Sick report modal */}
+      {sickModal && (
+        <div style={{ position:'fixed', inset:0, background:'rgba(0,0,0,.45)', display:'flex', alignItems:'center', justifyContent:'center', zIndex:999, padding:16 }} onClick={() => setSickModal(false)}>
+          <div style={{ background:C.surface, borderRadius:20, padding:24, width:'100%', maxWidth:400 }} onClick={e=>e.stopPropagation()}>
+            <div style={{ fontWeight:800, fontSize:18, marginBottom:18 }}>🤒 Medewerker ziekmelden</div>
+            <div style={{ marginBottom:14 }}>
+              <div style={{ fontSize:12, fontWeight:700, color:C.inkMid, marginBottom:5 }}>Medewerker</div>
+              <select value={sickForm.staffId} onChange={e => setSickForm(f=>({...f,staffId:e.target.value}))}
+                style={{ width:'100%', padding:'10px 12px', borderRadius:10, border:`1px solid ${C.border}`, fontSize:14, color:C.ink }}>
+                <option value="">Kies medewerker</option>
+                {scheduledStaff.map(s => <option key={s.id} value={s.id}>{s.name}</option>)}
+              </select>
+            </div>
+            <div style={{ marginBottom:20 }}>
+              <div style={{ fontSize:12, fontWeight:700, color:C.inkMid, marginBottom:5 }}>Dag</div>
+              <select value={sickForm.di} onChange={e => setSickForm(f=>({...f,di:+e.target.value}))}
+                style={{ width:'100%', padding:'10px 12px', borderRadius:10, border:`1px solid ${C.border}`, fontSize:14, color:C.ink }}>
+                {DAYS_FULL.map((d, i) => {
+                  const sh = sickForm.staffId ? currentSchedule[sickForm.staffId]?.[i] : null
+                  return <option key={i} value={i}>{d} {sh?`— ${sh}`:'(vrij)'}</option>
+                })}
+              </select>
+            </div>
+            <div style={{ display:'flex', gap:10 }}>
+              <button onClick={() => setSickModal(false)} style={{ ...btn(), flex:1, background:'#EBE7DE', color:C.inkMid, padding:'12px', borderRadius:12 }}>Annuleren</button>
+              <button onClick={reportSick} disabled={!sickForm.staffId}
+                style={{ ...btn(), flex:2, background:C.crimson, color:C.white, padding:'12px', borderRadius:12 }}>
+                🤒 Ziekmelden & dienst openzetten
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* Claim/assign modal */}
+      {claimModal && (
+        <div style={{ position:'fixed', inset:0, background:'rgba(0,0,0,.45)', display:'flex', alignItems:'center', justifyContent:'center', zIndex:999, padding:16 }} onClick={() => setClaimModal(null)}>
+          <div style={{ background:C.surface, borderRadius:20, padding:24, width:'100%', maxWidth:400 }} onClick={e=>e.stopPropagation()}>
+            <div style={{ fontWeight:800, fontSize:18, marginBottom:4 }}>Dienst toewijzen</div>
+            <div style={{ color:C.inkMuted, fontSize:13, marginBottom:18 }}>
+              {claimModal.date} — {claimModal.shift_name}
+            </div>
+            <div style={{ display:'flex', flexDirection:'column', gap:8, marginBottom:16 }}>
+              {allStaff.filter(s => s.id !== claimModal.original_staff_id && s.is_active).map(s => (
+                <button key={s.id} onClick={() => approveClaimShift(claimModal.id, s.id)}
+                  style={{ ...btn(), display:'flex', alignItems:'center', gap:10, padding:'10px 14px',
+                    background:C.surfaceAlt, border:`1px solid ${C.border}`, borderRadius:12, textAlign:'left' }}>
+                  <Avatar name={s.name} color={s.color} size={32}/>
+                  <div>
+                    <div style={{ fontWeight:700, fontSize:13, color:C.ink }}>{s.name}</div>
+                    <div style={{ color:C.inkMuted, fontSize:11 }}>{s.depts?.map(d=>DEPTS[d]?.label).join(', ')}</div>
+                  </div>
+                </button>
+              ))}
+            </div>
+            <button onClick={() => setClaimModal(null)} style={{ ...btn(), width:'100%', background:'#EBE7DE', color:C.inkMid, padding:'12px', borderRadius:12 }}>Annuleren</button>
           </div>
         </div>
       )}
@@ -1387,7 +1735,7 @@ function InstellingenTab({ settings, orgId, shiftTemplates, onReload, show }) {
           <button onClick={() => { setEditTmpl({ _isNew:true, name:'', start_time:'09:00', end_time:'17:00', break_minutes:30 }); setTmplModal(true) }}
             style={{ ...btn(), background:C.ink, color:C.white, padding:'7px 14px', fontSize:12, borderRadius:9 }}>＋ Nieuwe dienst</button>
         </div>
-        {Object.values(shiftTemplates).map(t => (
+        {Object.values(shiftTemplates).sort((a,b) => (a.start_time||'').localeCompare(b.start_time||'')).map(t => (
           <div key={t.id} style={{ display:'flex', alignItems:'center', gap:12, padding:'12px 0', borderBottom:`1px solid #EEE9E0` }}>
             <div style={{ flex:1 }}>
               <div style={{ fontWeight:700, fontSize:14, color:C.ink }}>{t.name}</div>
@@ -1472,3 +1820,4 @@ function InstellingenTab({ settings, orgId, shiftTemplates, onReload, show }) {
     </div>
   )
 }
+
