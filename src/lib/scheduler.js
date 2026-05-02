@@ -1,3 +1,4 @@
+
 // --- RoosterAI Schedule Generation Engine ------------------------------------
 // Rules:
 // 1. Max maxDaysPerWeek days per staff member
