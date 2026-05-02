@@ -1115,15 +1115,10 @@ function PersoneelTab({ allStaff, capacities, orgId, onReload, show, shiftTempla
           pref_min_days:form.pref_min_days||1, pref_max_days:form.pref_max_days||5,
         }).eq('id', editId)
         if (updErr) { show('Fout bij opslaan: ' + updErr.message); return }
-        // Update local allStaff directly to prevent form reset
-        setAllStaff(ss => ss.map(s => s.id === editId ? {
-          ...s, name:form.name, email:form.email, role:form.role, color:form.color,
-          contract_type:form.contract_type, contract_hours:form.contract_hours,
-          min_hours:form.min_hours, max_hours:form.max_hours,
-          hourly_rate:form.hourly_rate, depts:form.depts,
-          pref_min_days:form.pref_min_days||1, pref_max_days:form.pref_max_days||5,
-        } : s))
         show(`✓ ${form.name} bijgewerkt`)
+        setModal(false); setEditId(null); setForm(emptyForm)
+        onReload()
+        return // early return to skip the modal close below
       } else {
         // Create auth user via signUp
         const { data: authData, error: authErr } = await supabase.auth.signUp({
