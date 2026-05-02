@@ -1107,13 +1107,22 @@ function PersoneelTab({ allStaff, capacities, orgId, onReload, show, shiftTempla
     if (!form.name || !form.email || !form.depts.length) { show('Vul naam, e-mail en afdeling in'); return }
     try {
       if (editId) {
-        await supabase.from('staff').update({
+        const { error: updErr } = await supabase.from('staff').update({
           name:form.name, email:form.email, role:form.role, color:form.color,
           contract_type:form.contract_type, contract_hours:form.contract_hours,
           min_hours:form.min_hours, max_hours:form.max_hours,
           hourly_rate:form.hourly_rate, depts:form.depts,
           pref_min_days:form.pref_min_days||1, pref_max_days:form.pref_max_days||5,
         }).eq('id', editId)
+        if (updErr) { show('Fout bij opslaan: ' + updErr.message); return }
+        // Update local allStaff directly to prevent form reset
+        setAllStaff(ss => ss.map(s => s.id === editId ? {
+          ...s, name:form.name, email:form.email, role:form.role, color:form.color,
+          contract_type:form.contract_type, contract_hours:form.contract_hours,
+          min_hours:form.min_hours, max_hours:form.max_hours,
+          hourly_rate:form.hourly_rate, depts:form.depts,
+          pref_min_days:form.pref_min_days||1, pref_max_days:form.pref_max_days||5,
+        } : s))
         show(`✓ ${form.name} bijgewerkt`)
       } else {
         // Create auth user via signUp
@@ -1697,8 +1706,17 @@ function InstellingenTab({ settings, orgId, shiftTemplates, onReload, show }) {
   useEffect(() => setS(settings), [settings])
 
   async function saveSettings() {
-    await supabase.from('org_settings').upsert({ org_id: orgId, ...s }, { onConflict: 'org_id' })
-    show('✓ Instellingen opgeslagen')
+    const { error } = await supabase.from('org_settings').upsert(
+      { org_id: orgId, ...s },
+      { onConflict: 'org_id' }
+    )
+    if (error) {
+      show('Fout bij opslaan: ' + error.message)
+      console.error('Settings save error:', error)
+    } else {
+      show('✓ Instellingen opgeslagen')
+      onReload()
+    }
   }
 
   async function saveTmpl() {
