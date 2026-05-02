@@ -1116,22 +1116,24 @@ function PersoneelTab({ allStaff, capacities, orgId, onReload, show, shiftTempla
         }).eq('id', editId)
         show(`✓ ${form.name} bijgewerkt`)
       } else {
-        // Create auth user
-        const { data: authData, error: authErr } = await supabase.auth.admin.createUser({
-          email: form.email, password: form.password, email_confirm: true
+        // Create auth user via signUp
+        const { data: authData, error: authErr } = await supabase.auth.signUp({
+          email: form.email,
+          password: form.password || Math.random().toString(36).slice(-8),
+          options: { data: { name: form.name } }
         })
-        if (authErr) {
-          // If admin API not available, use signUp
-          await supabase.auth.signUp({ email:form.email, password:form.password })
-        }
+        if (authErr && !authErr.message.includes('already registered')) throw authErr
+        // Get auth_id — either new or existing user
+        const authId = authData?.user?.id || null
         await supabase.from('staff').insert({
-          org_id: orgId, auth_id: authData?.user?.id,
+          org_id: orgId, auth_id: authId,
           name:form.name, email:form.email, role:form.role, color:form.color,
           contract_type:form.contract_type, contract_hours:form.contract_hours,
           min_hours:form.min_hours, max_hours:form.max_hours,
           hourly_rate:form.hourly_rate, depts:form.depts, is_active:true,
+          pref_min_days:form.pref_min_days||1, pref_max_days:form.pref_max_days||5,
         })
-        show(`✓ ${form.name} toegevoegd — uitnodiging verstuurd naar ${form.email}`)
+        show(`✓ ${form.name} toegevoegd — wachtwoord: ${form.password||'(automatisch)'}`)
       }
       setModal(false); setEditId(null); setForm(emptyForm); onReload()
     } catch (e) { show('Fout: ' + e.message) }
