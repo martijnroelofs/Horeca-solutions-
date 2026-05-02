@@ -27,7 +27,7 @@ export function AuthProvider({ children }) {
   async function loadStaff(authId) {
     const { data } = await supabase
       .from('staff')
-      .select('*, organisations(*), org_settings(*)')
+      .select('*')
       .eq('auth_id', authId)
       .single()
     setStaff(data)
@@ -52,3 +52,4 @@ export function AuthProvider({ children }) {
 }
 
 export const useAuth = () => useContext(AuthContext)
+
