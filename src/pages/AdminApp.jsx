@@ -472,6 +472,13 @@ export default function AdminApp() {
                     padding:'8px 16px', fontSize:13, borderRadius:10 }}>
                   {generating ? '⟳ Bezig...' : '🪄 Genereer'}
                 </button>
+                {currentRoster && !isPublished && (
+                  <button onClick={handleDeleteRoster}
+                    style={{ ...btn(), background:C.crimsonSoft, color:C.crimson,
+                      border:`1px solid ${C.crimson}44`, padding:'8px 14px', fontSize:13, borderRadius:10 }}>
+                    🗑 Verwijder rooster
+                  </button>
+                )}
                 {!isPublished && currentRoster && (
                   <button onClick={handlePublish}
                     style={{ ...btn(), background:C.jade, color:C.white, padding:'8px 16px', fontSize:13, borderRadius:10 }}>
@@ -543,6 +550,7 @@ export default function AdminApp() {
             weekIdx={weekIdx} weeks={weeks} setWeekIdx={setWeekIdx}
             onGenerate={handleGenerate} generating={generating}
             onPublish={handlePublish}
+            onDelete={currentRoster && !isPublished ? handleDeleteRoster : null}
             onCellChange={async (staffId, di, shiftName) => {
               const roster = currentRoster || (await supabase.from('rosters').upsert({
                 org_id: orgId, week_start: currentWeek.monday, status:'concept'
@@ -674,6 +682,13 @@ function RoosterTab({ allStaff, currentSchedule, currentWeek, shiftTemplates, pe
               padding:'10px 18px', fontSize:13, borderRadius:11, opacity:isPublished?0.5:1 }}>
             {generating ? '⟳ Bezig...' : '🪄 Genereer'}
           </button>
+          {onDelete && (
+            <button onClick={onDelete}
+              style={{ ...btn(), background:C.crimsonSoft, color:C.crimson,
+                border:`1px solid ${C.crimson}44`, padding:'10px 14px', fontSize:13, borderRadius:11 }}>
+              🗑 Verwijder rooster
+            </button>
+          )}
           {!isPublished && (
             <button onClick={onPublish}
               style={{ ...btn(), background:C.jade, color:C.white, padding:'10px 18px', fontSize:13, borderRadius:11 }}>
