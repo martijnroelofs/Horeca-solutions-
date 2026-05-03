@@ -57,6 +57,63 @@ export default function AdminApp() {
 
   const show = msg => { setToast(msg); setTimeout(() => setToast(null), 3000) }
 
+  // ── Email reminder via Resend ───────────────────────────────────────────────
+  async function sendReminderEmails() {
+    if (!settings.resend_api_key) { show('Stel eerst de Resend API key in bij Instellingen'); return }
+    const appUrl = window.location.origin
+    const staffWithoutAvail = allStaff.filter(s => {
+      if (!s.is_active || !s.email) return false
+      const pat = availPatterns[s.id] || {}
+      return Object.keys(pat).length === 0
+    })
+    if (!staffWithoutAvail.length) { show('Alle medewerkers hebben beschikbaarheid ingevuld'); return }
+    show(`📧 Versturen naar ${staffWithoutAvail.length} medewerker(s)...`)
+    let ok = 0, fail = 0
+    for (const s of staffWithoutAvail) {
+      const html = `
+        <div style="font-family:sans-serif;max-width:500px;margin:0 auto;padding:20px">
+          <div style="background:#1A2340;padding:20px;border-radius:12px;text-align:center;margin-bottom:20px">
+            <span style="font-size:32px">🍽</span>
+            <h1 style="color:#C4882A;margin:8px 0 4px;font-size:22px">RoosterAI</h1>
+          </div>
+          <p style="color:#1A2340;font-size:16px">Beste ${s.name.split(' ')[0]},</p>
+          <p style="color:#3D4460">Je beschikbaarheid voor de komende maand is nog niet ingevuld in RoosterAI.</p>
+          <p style="color:#3D4460">Log in en ga naar het tabblad <strong>Beschikbaar</strong> om je beschikbaarheid in te stellen.</p>
+          <div style="text-align:center;margin:24px 0">
+            <a href="${appUrl}" style="background:#1A5CB4;color:white;padding:12px 28px;border-radius:10px;text-decoration:none;font-weight:700;font-size:15px">
+              Naar RoosterAI →
+            </a>
+          </div>
+          <p style="color:#8A90A8;font-size:13px"><strong>Deadline:</strong> de 14e van de maand.</p>
+          <p style="color:#8A90A8;font-size:13px">Met vriendelijke groet,<br/>Het management</p>
+        </div>
+      `
+      try {
+        const res = await fetch('https://api.resend.com/emails', {
+          method: 'POST',
+          headers: {
+            'Authorization': 'Bearer ' + settings.resend_api_key,
+            'Content-Type': 'application/json'
+          },
+          body: JSON.stringify({
+            from: settings.sender_email || 'rooster@jouwrestaurant.nl',
+            to: s.email,
+            subject: 'Vergeet niet je beschikbaarheid in te vullen!',
+            html
+          })
+        })
+        const data = await res.json()
+        if (data.id) ok++; else fail++
+        await supabase.from('email_log').insert({
+          org_id: orgId, to_email: s.email,
+          subject: 'Vergeet niet je beschikbaarheid in te vullen!',
+          status: data.id ? 'sent' : 'failed'
+        })
+      } catch (e) { fail++ }
+    }
+    show(fail > 0 ? `✓ ${ok} verstuurd · ${fail} mislukt` : `✓ ${ok} herinneringen verstuurd!`)
+  }
+
   // ── Load all data ─────────────────────────────────────────────────────────
   useEffect(() => {
     if (!orgId) return
@@ -424,7 +481,32 @@ export default function AdminApp() {
               </div>
             </div>
 
-            {/* Bezetting per dag */}
+            {/* Email herinnering */}
+          {(() => {
+            const noAvail = allStaff.filter(s => s.is_active && s.email && Object.keys(availPatterns[s.id]||{}).length === 0)
+            return noAvail.length > 0 ? (
+              <div style={{ background:C.amberSoft, border:`1px solid ${C.amber}44`, borderRadius:14,
+                padding:'12px 18px', display:'flex', alignItems:'center', justifyContent:'space-between', flexWrap:'wrap', gap:10 }}>
+                <div style={{ display:'flex', alignItems:'center', gap:10 }}>
+                  <span style={{ fontSize:18 }}>📧</span>
+                  <div>
+                    <div style={{ fontWeight:700, color:C.amber, fontSize:14 }}>
+                      {noAvail.length} medewerker(s) zonder beschikbaarheid
+                    </div>
+                    <div style={{ color:C.inkMuted, fontSize:12 }}>
+                      {noAvail.map(s=>s.name.split(' ')[0]).join(', ')}
+                    </div>
+                  </div>
+                </div>
+                <button onClick={sendReminderEmails}
+                  style={{ ...btn(), background:C.amber, color:C.white, padding:'8px 16px', fontSize:13, borderRadius:10 }}>
+                  📧 Stuur herinnering
+                </button>
+              </div>
+            ) : null
+          })()}
+
+          {/* Bezetting per dag */}
             <Card style={{ padding:20 }}>
               <div style={{ fontWeight:700, fontSize:13, color:C.inkMid, marginBottom:14 }}>BEZETTING PER DAG</div>
               <div style={{ display:'flex', gap:6 }}>
