@@ -564,7 +564,20 @@ function RoosterTab({ allStaff, currentSchedule, currentWeek, shiftTemplates, pe
 
   const staffByDept = useMemo(() => {
     const o = {}
-    DEPT_KEYS.forEach(dk => { o[dk] = allStaff.filter(s => s.depts?.includes(dk)) })
+    // Each staff member appears only under their first/primary dept
+    // to avoid showing them multiple times in the roster
+    DEPT_KEYS.forEach(dk => {
+      o[dk] = allStaff.filter(s => s.depts?.includes(dk) && s.depts?.[0] === dk)
+    })
+    // Safety: staff with no primary dept match still appear under first dept they belong to
+    allStaff.forEach(s => {
+      if (!s.depts?.length) return
+      const appearsInAny = DEPT_KEYS.some(dk => o[dk]?.find(x => x.id === s.id))
+      if (!appearsInAny) {
+        const firstDept = s.depts[0]
+        if (o[firstDept]) o[firstDept].push(s)
+      }
+    })
     return o
   }, [allStaff])
 
