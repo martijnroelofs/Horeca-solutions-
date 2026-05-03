@@ -74,8 +74,11 @@ export default function AdminApp() {
 
   async function loadAll() {
     setLoading(true)
+    // Load staff first since other functions depend on staff IDs
+    await loadStaff()
+    // Then load everything else in parallel
     await Promise.all([
-      loadStaff(), loadShifts(), loadTemplateSlots(),
+      loadShifts(), loadTemplateSlots(),
       loadPeaks(), loadHolidays(), loadAssignments(),
       loadLeaves(), loadSwaps(), loadAvailability(),
       loadCapacities(), loadSettings(), loadOvertime(),
@@ -140,10 +143,15 @@ export default function AdminApp() {
     setSwapRequests(data || [])
   }
   async function loadAvailability() {
+    // Get all staff IDs for this org directly
+    const { data: staffIds } = await supabase.from('staff')
+      .select('id').eq('org_id', orgId).eq('is_active', true)
+    const ids = (staffIds || []).map(s => s.id)
+    if (!ids.length) return
     const { data: pats } = await supabase.from('availability_patterns')
-      .select('*').in('staff_id', allStaff.length ? allStaff.map(s => s.id) : ['none'])
+      .select('*').in('staff_id', ids)
     const { data: ovs } = await supabase.from('availability_overrides')
-      .select('*').in('staff_id', allStaff.length ? allStaff.map(s => s.id) : ['none'])
+      .select('*').in('staff_id', ids)
     const patMap = {}
     ;(pats || []).forEach(p => {
       if (!patMap[p.staff_id]) patMap[p.staff_id] = {}
