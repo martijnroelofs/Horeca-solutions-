@@ -244,6 +244,20 @@ export default function AdminApp() {
     setOvertimeLog(map)
   }
 
+  // ── Delete roster ──────────────────────────────────────────────────────────
+  async function handleDeleteRoster() {
+    const roster = rosters[currentWeek.monday]
+    if (!roster) { show('Geen rooster om te verwijderen'); return }
+    if (roster.status === 'published') {
+      show('Gepubliceerd rooster kan niet verwijderd worden — trek publicatie eerst in')
+      return
+    }
+    await supabase.from('roster_assignments').delete().eq('roster_id', roster.id)
+    await supabase.from('rosters').delete().eq('id', roster.id)
+    await loadAssignments()
+    show('✓ Rooster verwijderd — je kunt nu opnieuw genereren')
+  }
+
   // ── Generate schedule ────────────────────────────────────────────────────
   async function handleGenerate() {
     setGenerating(true)
