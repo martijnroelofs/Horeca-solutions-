@@ -663,7 +663,7 @@ export default function AdminApp() {
 
 function RoosterTab({ allStaff, currentSchedule, currentWeek, shiftTemplates, peakMoments,
   leaveRequests, availPatterns, availOverrides, capacities, isPublished,
-  weekIdx, weeks, setWeekIdx, onGenerate, generating, onPublish, onCellChange }) {
+  weekIdx, weeks, setWeekIdx, onGenerate, generating, onPublish, onDelete, onCellChange }) {
   const [editCell, setEditCell] = useState(null)
 
   const staffByDept = useMemo(() => {
