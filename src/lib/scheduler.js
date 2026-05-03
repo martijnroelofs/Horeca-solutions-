@@ -1,4 +1,3 @@
-
 // --- RoosterAI Schedule Generation Engine ------------------------------------
 // Rules:
 // 1. Max maxDaysPerWeek days per staff member
@@ -139,7 +138,7 @@ export function generateSchedule({
         const pool = staff.filter(s => {
           if (!s.is_active) return false
           if (!s.depts?.includes(dk)) return false
-          if (schedule[s.id][di] !== null) return false // already assigned today
+          if (schedule[s.id][di] !== null && schedule[s.id][di] !== undefined) return false // already assigned today — no double booking
           if (leaveSet.has(`${s.id}-${date}`)) return false
 
           // Days count check
@@ -198,6 +197,8 @@ export function generateSchedule({
 
         // Filter out staff who exceeded pref_max_days (soft rule - only if enough alternatives)
         const withinPref = pool.filter(s => {
+          // Double-check not already assigned today (safety guard)
+          if (schedule[s.id][di] !== null) return false
           const days = schedule[s.id].filter(Boolean).length
           return days < (s.pref_max_days || settings.max_days_per_week || 5)
         })
