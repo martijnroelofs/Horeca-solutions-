@@ -1310,6 +1310,7 @@ function PersoneelTab({ allStaff, capacities, orgId, onReload, show, shiftTempla
   const [modal, setModal] = useState(false)
   const [editId, setEditId] = useState(null)
   const [capId, setCapId] = useState(null)
+  const [availId, setAvailId] = useState(null)
   const [localScores, setLocalScores] = useState({})
   // Sync localScores when capacities are loaded from DB
   useEffect(() => { setLocalScores(capacities) }, [capacities])
@@ -1428,6 +1429,8 @@ function PersoneelTab({ allStaff, capacities, orgId, onReload, show, shiftTempla
                   }} style={{ ...btn(), flex:1, background:'#EBE7DE', color:C.inkMid, padding:'7px', fontSize:12, borderRadius:9 }}>✏️ Bewerken</button>
                   <button onClick={() => setCapId(capId===s.id?null:s.id)}
                     style={{ ...btn(), flex:1, background:capId===s.id?C.ink:'#EBE7DE', color:capId===s.id?C.white:C.inkMid, padding:'7px', fontSize:12, borderRadius:9 }}>⭐ Capaciteit</button>
+                    <button onClick={() => setAvailId(availId===s.id?null:s.id)}
+                    style={{ ...btn(), flex:1, background:availId===s.id?C.sky:'#EBE7DE', color:availId===s.id?C.white:C.inkMid, padding:'7px', fontSize:12, borderRadius:9 }}>📅 Beschikbaar</button>
                   <button onClick={async () => { await supabase.from('staff').update({ is_active:!s.is_active }).eq('id', s.id); onReload() }}
                     style={{ ...btn(), flex:1, background:s.is_active?C.crimsonSoft:C.jadeSoft, color:s.is_active?C.crimson:C.jade, padding:'7px', fontSize:12, borderRadius:9 }}>
                     {s.is_active ? 'Deactiveren' : 'Activeren'}
@@ -1479,6 +1482,35 @@ function PersoneelTab({ allStaff, capacities, orgId, onReload, show, shiftTempla
                         </div>
                       )
                     })}
+                  </div>
+                )}
+                {availId === s.id && (
+                  <div style={{ marginTop:12, paddingTop:12, borderTop:`1px solid #EEE9E0` }}>
+                    <div style={{ fontWeight:700, fontSize:13, marginBottom:10, color:C.inkMid }}>Beschikbaarheid per dag</div>
+                    <div style={{ display:'grid', gridTemplateColumns:'repeat(7,1fr)', gap:4 }}>
+                      {['Ma','Di','Wo','Do','Vr','Za','Zo'].map((d, di) => {
+                        const bits = availPatterns[s.id]?.[di] ?? null
+                        const slots = bits === null ? [] : ['Ochtend','Middag','Avond'].filter((_,si) => bits & (1<<si))
+                        return (
+                          <div key={d} style={{ textAlign:'center' }}>
+                            <div style={{ fontSize:10, fontWeight:700, color:C.inkMuted, marginBottom:4 }}>{d}</div>
+                            <div style={{ padding:'6px 4px', borderRadius:8, fontSize:9, fontWeight:700,
+                              background: bits === null ? C.surfaceAlt : bits === 0 ? C.crimsonSoft : C.jadeSoft,
+                              color: bits === null ? C.inkMuted : bits === 0 ? C.crimson : C.jade,
+                              border: `1px solid ${bits === null ? C.border : bits === 0 ? C.crimson+'44' : C.jade+'44'}`,
+                              minHeight:32, display:'flex', flexDirection:'column', alignItems:'center', justifyContent:'center', gap:1 }}>
+                              {bits === null ? '–' : bits === 0 ? '✗' : slots.map(s => s[0]).join('/')}
+                            </div>
+                          </div>
+                        )
+                      })}
+                    </div>
+                    <div style={{ display:'flex', gap:8, marginTop:8, fontSize:10, color:C.inkMuted }}>
+                      <span style={{ color:C.jade }}>■</span> Beschikbaar
+                      <span style={{ color:C.crimson }}>■</span> Onbeschikbaar
+                      <span>■</span> Niet ingevuld
+                      <span style={{ marginLeft:4 }}>O=Ochtend M=Middag A=Avond</span>
+                    </div>
                   </div>
                 )}
               </div>
