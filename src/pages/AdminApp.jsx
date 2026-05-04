@@ -59,7 +59,7 @@ export default function AdminApp() {
   const [settings, setSettings] = useState({})
   const [generating, setGenerating] = useState(false)
   const [recurringPeaks, setRecurringPeaks] = useState({ 4:4, 5:7, 6:2 })
-  const [scheduleMode, setScheduleMode] = useState(75) // 0=min cost, 100=max quality // Fri eve, Sat all, Sun midday
+  const [scheduleMode, setScheduleMode] = useState(50) // 0=min cost, 100=max quality // Fri eve, Sat all, Sun midday
 
   const weeks = useMemo(() => getWeeks(), [])
   const currentWeek = weeks[weekIdx]
@@ -568,7 +568,7 @@ export default function AdminApp() {
               <div style={{ display:'flex', gap:8, alignItems:'center', flexWrap:'wrap' }}>
                 <div style={{ background:'rgba(255,255,255,0.5)', borderRadius:10, padding:'6px 12px' }}>
                   <div style={{ fontSize:10, fontWeight:700, color:C.inkMid, marginBottom:3 }}>
-                    {scheduleMode <= 33 ? '💰 Min. kosten' : scheduleMode <= 66 ? '⚖️ Gebalanceerd' : '⭐ Max. kwaliteit'}
+                    {scheduleMode <= 33 ? '💰 Laagste kosten' : scheduleMode <= 66 ? '⚖️ Gebalanceerd' : '⭐ Beste kwaliteit'}
                   </div>
                   <input type="range" min={0} max={100} value={scheduleMode}
                     onChange={e => setScheduleMode(+e.target.value)}
