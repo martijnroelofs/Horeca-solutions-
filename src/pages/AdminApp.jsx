@@ -1005,7 +1005,7 @@ function HistorischTab({ weeks, rosters, assignments, allStaff, shiftTemplates, 
 function TemplateTab({ templateSlots: initialSlots, shiftTemplates, peakMoments, holidays, recurringPeaks, setRecurringPeaks, orgId, onReload, show }) {
   const [dayTab, setDayTab] = useState(0)
   const [newPeak, setNewPeak] = useState({ date:'', label:'', slots:7 })
-  const [newHoliday, setNewHoliday] = useState({ date:'', name:'', is_closed:true })
+  const [newHoliday, setNewHoliday] = useState({ date:'', name:'', is_closed:false })
   // recurringPeaks comes from AdminApp props
   const [localSlots, setLocalSlots] = useState(initialSlots)
 
@@ -1236,6 +1236,11 @@ function TemplateTab({ templateSlots: initialSlots, shiftTemplates, peakMoments,
           <input type="text" value={newHoliday.name} onChange={e => setNewHoliday(h => ({...h, name:e.target.value}))}
             placeholder="Naam (bijv. Koningsdag)"
             style={{ flex:2, padding:'9px 12px', borderRadius:10, border:`1px solid ${C.border}`, fontSize:13, minWidth:150 }}/>
+          <button onClick={() => setNewHoliday(h => ({...h, is_closed:!h.is_closed}))}
+            style={{ ...btn(), padding:'9px 12px', fontSize:12, borderRadius:10, flexShrink:0,
+              background:newHoliday.is_closed?C.crimson:C.jade, color:C.white }}>
+            {newHoliday.is_closed ? '🔒 Gesloten' : '📋 Open'}
+          </button>
           <button onClick={addHoliday} style={{ ...btn(), background:C.jade+'18', color:C.jade,
             border:`1px solid ${C.jade}44`, padding:'9px 14px', fontSize:13, borderRadius:10 }}>＋ Toevoegen</button>
         </div>
@@ -1245,7 +1250,16 @@ function TemplateTab({ templateSlots: initialSlots, shiftTemplates, peakMoments,
             padding:'9px 12px', background:C.surfaceAlt, borderRadius:10, marginBottom:6 }}>
             <div>
               <div style={{ fontWeight:700, fontSize:13 }}>{h.name}</div>
-              <div style={{ color:C.inkMuted, fontSize:11 }}>{h.date} · {h.is_closed ? '🔒 Gesloten' : '📋 Aangepaste bezetting'} · 💶 150%</div>
+              <div style={{ display:'flex', alignItems:'center', gap:6, marginTop:2 }}>
+                <div style={{ color:C.inkMuted, fontSize:11 }}>{h.date} · 💶 150%</div>
+                <button onClick={async () => {
+                  await supabase.from('public_holidays').update({ is_closed: !h.is_closed }).eq('id', h.id)
+                  onReload()
+                }} style={{ ...btn(), padding:'2px 8px', fontSize:10, borderRadius:6,
+                  background:h.is_closed?C.crimson:C.jade, color:C.white }}>
+                  {h.is_closed ? '🔒 Gesloten' : '📋 Open'}
+                </button>
+              </div>
             </div>
             <button onClick={async () => { await supabase.from('public_holidays').delete().eq('id', h.id); onReload(); show('Verwijderd') }}
               style={{ ...btn(), background:C.crimsonSoft, color:C.crimson, padding:'5px 10px', fontSize:11, borderRadius:8 }}>✕</button>
