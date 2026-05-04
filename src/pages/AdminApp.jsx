@@ -44,6 +44,8 @@ export default function AdminApp() {
   const [allStaff, setAllStaff] = useState([])
   const [shiftTemplates, setShiftTemplates] = useState({})
   const [templateSlots, setTemplateSlots] = useState([])
+  const [bezettingTemplates, setBezettingTemplates] = useState([])
+  const [activeTemplateId, setActiveTemplateId] = useState(null)
   const [peakMoments, setPeakMoments] = useState([])
   const [holidays, setHolidays] = useState([])
   const [rosters, setRosters] = useState({}) // { weekMonday: roster }
@@ -152,7 +154,7 @@ export default function AdminApp() {
     await loadStaff()
     // Then load everything else in parallel
     await Promise.all([
-      loadShifts(), loadTemplateSlots(),
+      loadShifts(), loadTemplateSlots(), loadBezettingTemplates(),
       loadPeaks(), loadHolidays(), loadAssignments(),
       loadLeaves(), loadSwaps(), loadAvailability(),
       loadCapacities(), loadSettings(), loadOvertime(),
@@ -164,14 +166,28 @@ export default function AdminApp() {
     const { data } = await supabase.from('staff').select('*').eq('org_id', orgId).eq('is_active', true)
     setAllStaff(data || [])
   }
+  async function loadBezettingTemplates() {
+    try {
+      const { data, error } = await supabase.from('bezetting_templates')
+        .select('*').eq('org_id', orgId).order('created_at')
+      if (error) { console.warn('bezetting_templates not ready:', error.message); return }
+      setBezettingTemplates(data || [])
+      const def = (data || []).find(t => t.is_default)
+      if (def) setActiveTemplateId(id => id || def.id)
+    } catch(e) { console.warn('bezetting_templates error:', e) }
+  }
+
   async function loadShifts() {
     const { data } = await supabase.from('shift_templates').select('*').eq('org_id', orgId)
     const map = {}
     ;(data || []).forEach(s => { map[s.name] = s })
     setShiftTemplates(map)
   }
-  async function loadTemplateSlots() {
-    const { data } = await supabase.from('template_slots').select('*').eq('org_id', orgId)
+  async function loadTemplateSlots(templateId) {
+    const query = supabase.from('template_slots').select('*').eq('org_id', orgId)
+    const { data } = templateId
+      ? await query.eq('bezetting_template_id', templateId)
+      : await query
     setTemplateSlots(data || [])
   }
   async function loadPeaks() {
@@ -681,7 +697,12 @@ export default function AdminApp() {
             templateSlots={templateSlots} shiftTemplates={shiftTemplates}
             peakMoments={peakMoments} holidays={holidays}
             recurringPeaks={recurringPeaks} setRecurringPeaks={setRecurringPeaks}
-            orgId={orgId} onReload={loadAll} show={show}
+            bezettingTemplates={bezettingTemplates}
+            activeTemplateId={activeTemplateId}
+            setActiveTemplateId={setActiveTemplateId}
+            orgId={orgId} onReload={loadAll}
+            onReloadSlots={loadTemplateSlots}
+            show={show}
           />
         )}
 
@@ -1002,11 +1023,48 @@ function HistorischTab({ weeks, rosters, assignments, allStaff, shiftTemplates, 
   )
 }
 
-function TemplateTab({ templateSlots: initialSlots, shiftTemplates, peakMoments, holidays, recurringPeaks, setRecurringPeaks, orgId, onReload, show }) {
+function TemplateTab({ templateSlots: initialSlots, shiftTemplates, peakMoments, holidays, recurringPeaks, setRecurringPeaks, bezettingTemplates, activeTemplateId, setActiveTemplateId, onReloadSlots, orgId, onReload, show }) {
   const [dayTab, setDayTab] = useState(0)
   const [newPeak, setNewPeak] = useState({ date:'', label:'', slots:7 })
   const [newHoliday, setNewHoliday] = useState({ date:'', name:'', is_closed:false })
+  const [newTmplName, setNewTmplName] = useState('')
+  const [newTmplDesc, setNewTmplDesc] = useState('')
+  const [showNewTmpl, setShowNewTmpl] = useState(false)
   // recurringPeaks comes from AdminApp props
+
+  async function createBezettingTemplate() {
+    if (!newTmplName.trim()) { show('Voer een naam in'); return }
+    const { data: newT } = await supabase.from('bezetting_templates').insert({
+      org_id: orgId, name: newTmplName, description: newTmplDesc, is_default: false
+    }).select().single()
+    if (newT) {
+      // Copy slots from active template to new template
+      const currentSlots = localSlots.filter(s => s.is_recurring)
+      if (currentSlots.length) {
+        const copies = currentSlots.map(s => ({
+          org_id: orgId, day_of_week: s.day_of_week, dept: s.dept,
+          shift_name: s.shift_name, count: s.count, is_recurring: true,
+          bezetting_template_id: newT.id
+        }))
+        await supabase.from('template_slots').insert(copies)
+      }
+      setNewTmplName(''); setNewTmplDesc(''); setShowNewTmpl(false)
+      setActiveTemplateId(newT.id)
+      onReload()
+      show(`✓ Template "${newT.name}" aangemaakt${currentSlots.length ? ' (gekopieerd van huidige template)' : ''}`)
+    }
+  }
+
+  async function deleteBezettingTemplate(id) {
+    const tmpl = bezettingTemplates.find(t => t.id === id)
+    if (tmpl?.is_default) { show('Standaard template kan niet verwijderd worden'); return }
+    await supabase.from('template_slots').delete().eq('bezetting_template_id', id)
+    await supabase.from('bezetting_templates').delete().eq('id', id)
+    const def = bezettingTemplates.find(t => t.is_default)
+    if (def) setActiveTemplateId(def.id)
+    onReload()
+    show(`✓ Template "${tmpl?.name}" verwijderd`)
+  }
   const [localSlots, setLocalSlots] = useState(initialSlots)
 
   // Keep localSlots in sync when parent reloads (e.g. first load)
@@ -1059,7 +1117,61 @@ function TemplateTab({ templateSlots: initialSlots, shiftTemplates, peakMoments,
 
   return (
     <div style={{ display:'flex', flexDirection:'column', gap:16 }}>
-      <div style={{ fontWeight:900, fontSize:20, color:C.ink }}>Bezettingstemplate</div>
+      <div style={{ display:'flex', justifyContent:'space-between', alignItems:'center', flexWrap:'wrap', gap:10 }}>
+        <div>
+          <div style={{ fontWeight:900, fontSize:20, color:C.ink }}>Bezettingstemplate</div>
+          <div style={{ color:C.inkMuted, fontSize:13, marginTop:2 }}>Maak meerdere templates voor verschillende situaties (normaal, vakantie, kerst etc.)</div>
+        </div>
+        <button onClick={() => setShowNewTmpl(v => !v)}
+          style={{ ...btn(), background:C.ink, color:C.white, padding:'8px 16px', fontSize:13, borderRadius:10 }}>
+          ＋ Nieuwe template
+        </button>
+      </div>
+
+      {/* New template form */}
+      {showNewTmpl && (
+        <Card style={{ padding:16, border:`1px solid ${C.sky}44`, background:C.skySoft }}>
+          <div style={{ fontWeight:700, fontSize:14, marginBottom:12, color:C.sky }}>Nieuwe template aanmaken</div>
+          <div style={{ display:'flex', gap:8, marginBottom:10, flexWrap:'wrap' }}>
+            <input value={newTmplName} onChange={e => setNewTmplName(e.target.value)}
+              placeholder="Naam (bijv. Vakantieweek, Kerst...)"
+              style={{ flex:2, padding:'9px 12px', borderRadius:10, border:`1px solid ${C.border}`, fontSize:13, minWidth:160 }}/>
+            <input value={newTmplDesc} onChange={e => setNewTmplDesc(e.target.value)}
+              placeholder="Omschrijving (optioneel)"
+              style={{ flex:2, padding:'9px 12px', borderRadius:10, border:`1px solid ${C.border}`, fontSize:13, minWidth:120 }}/>
+          </div>
+          <div style={{ fontSize:12, color:C.inkMuted, marginBottom:10 }}>
+            💡 Huidige bezetting wordt gekopieerd als startpunt.
+          </div>
+          <div style={{ display:'flex', gap:8 }}>
+            <button onClick={() => setShowNewTmpl(false)}
+              style={{ ...btn(), flex:1, background:'#EBE7DE', color:C.inkMid, padding:'9px', borderRadius:10 }}>Annuleren</button>
+            <button onClick={createBezettingTemplate}
+              style={{ ...btn(), flex:2, background:C.sky, color:C.white, padding:'9px', borderRadius:10 }}>✓ Aanmaken</button>
+          </div>
+        </Card>
+      )}
+
+      {/* Template selector */}
+      {bezettingTemplates.length > 0 && (
+        <div style={{ display:'flex', gap:6, overflowX:'auto', paddingBottom:2 }}>
+          {bezettingTemplates.map(t => (
+            <div key={t.id} style={{ display:'flex', alignItems:'center', gap:4, flexShrink:0 }}>
+              <button onClick={() => { setActiveTemplateId(t.id); onReloadSlots && onReloadSlots(t.id) }}
+                style={{ ...btn(), padding:'8px 14px', borderRadius:10, fontSize:13, fontWeight:700,
+                  background:activeTemplateId===t.id?C.ink:'transparent',
+                  color:activeTemplateId===t.id?C.white:C.inkMuted,
+                  border:`1.5px solid ${activeTemplateId===t.id?C.ink:C.border}` }}>
+                {t.is_default ? '⭐ ' : ''}{t.name}
+              </button>
+              {!t.is_default && (
+                <button onClick={() => deleteBezettingTemplate(t.id)}
+                  style={{ ...btn(), background:C.crimsonSoft, color:C.crimson, padding:'6px 8px', fontSize:11, borderRadius:8 }}>✕</button>
+              )}
+            </div>
+          ))}
+        </div>
+      )}
 
       {/* Day tabs */}
       <div style={{ display:'flex', gap:4, overflowX:'auto' }}>
@@ -2098,4 +2210,3 @@ function InstellingenTab({ settings, orgId, shiftTemplates, onReload, show }) {
     </div>
   )
 }
-
