@@ -97,21 +97,16 @@ export default function AdminApp() {
         </div>
       `
       try {
-        const res = await fetch('https://api.resend.com/emails', {
-          method: 'POST',
-          headers: {
-            'Authorization': 'Bearer ' + settings.resend_api_key,
-            'Content-Type': 'application/json'
-          },
-          body: JSON.stringify({
-            from: settings.sender_email || 'rooster@jouwrestaurant.nl',
+        const { data, error } = await supabase.functions.invoke('send-email', {
+          body: {
             to: s.email,
             subject: 'Vergeet niet je beschikbaarheid in te vullen!',
-            html
-          })
+            html,
+            apiKey: settings.resend_api_key,
+            from: settings.sender_email || 'rooster@jouwrestaurant.nl',
+          }
         })
-        const data = await res.json()
-        if (data.id) ok++; else fail++
+        if (!error && data?.id) ok++; else fail++
         await supabase.from('email_log').insert({
           org_id: orgId, to_email: s.email,
           subject: 'Vergeet niet je beschikbaarheid in te vullen!',
