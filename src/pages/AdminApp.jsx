@@ -240,8 +240,12 @@ export default function AdminApp() {
     setAvailOverrides(ovMap)
   }
   async function loadCapacities() {
+    const { data: staffIds } = await supabase.from('staff')
+      .select('id').eq('org_id', orgId).eq('is_active', true)
+    const ids = (staffIds || []).map(s => s.id)
+    if (!ids.length) return
     const { data } = await supabase.from('capacity_scores')
-      .select('*').in('staff_id', allStaff.length ? allStaff.map(s => s.id) : ['none'])
+      .select('*').in('staff_id', ids)
     const map = {}
     ;(data || []).forEach(c => {
       if (!map[c.staff_id]) map[c.staff_id] = {}
@@ -1307,6 +1311,8 @@ function PersoneelTab({ allStaff, capacities, orgId, onReload, show, shiftTempla
   const [editId, setEditId] = useState(null)
   const [capId, setCapId] = useState(null)
   const [localScores, setLocalScores] = useState({})
+  // Sync localScores when capacities are loaded from DB
+  useEffect(() => { setLocalScores(capacities) }, [capacities])
   const emptyForm = { name:'', email:'', password:'', role:'', color:'#1D4ED8',
     contract_type:'vast', contract_hours:20, min_hours:8, max_hours:32, hourly_rate:12, depts:[] }
   const [form, setForm] = useState(emptyForm)
