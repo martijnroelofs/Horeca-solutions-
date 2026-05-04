@@ -1456,10 +1456,11 @@ function PersoneelTab({ allStaff, capacities, orgId, onReload, show, shiftTempla
                                 [s.id]: { ...(ls[s.id]||{}), [dk]: val }
                               }))
                               // Save to DB without triggering full reload
-                              await supabase.from('capacity_scores').upsert({
+                              const { error: capErr } = await supabase.from('capacity_scores').upsert({
                                 staff_id:s.id, dept:dk, score:val
                               }, { onConflict:'staff_id,dept' })
-                              show('✓ Score opgeslagen')
+                              if (capErr) show('Fout: ' + capErr.message)
+                              else show('✓ Score opgeslagen')
                             }}
                             onTouchEnd={async e => {
                               const val = localScores[s.id]?.[dk] ?? capacities[s.id]?.[dk] ?? 5
