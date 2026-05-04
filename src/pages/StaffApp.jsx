@@ -358,7 +358,37 @@ function AvailabilityEditor({ patterns, overrides, onSavePattern, onSaveOverride
   const [mode, setMode] = useState('pattern')
   const [selDate, setSelDate] = useState('')
   const [dateSlots, setDateSlots] = useState(0)
+  const [selectedDates, setSelectedDates] = useState([]) // multi-select
+  const [multiSlots, setMultiSlots] = useState(7) // for multi-select
   const SLOTS = ['Ochtend', 'Middag', 'Avond']
+
+  // Get next 6 weeks of dates for calendar
+  const calendarDates = (() => {
+    const dates = []
+    const now = new Date()
+    const start = new Date(now)
+    start.setDate(now.getDate() - now.getDay() + 1) // Monday
+    for (let i = 0; i < 42; i++) {
+      const d = new Date(start)
+      d.setDate(start.getDate() + i)
+      dates.push(d.toISOString().split('T')[0])
+    }
+    return dates
+  })()
+
+  const toggleDate = (date) => {
+    setSelectedDates(prev =>
+      prev.includes(date) ? prev.filter(d => d !== date) : [...prev, date]
+    )
+  }
+
+  async function saveMultiDates() {
+    for (const date of selectedDates) {
+      await onSaveOverride(date, multiSlots)
+    }
+    setSelectedDates([])
+    onSaved()
+  }
 
   return (
     <Card style={{ padding:20 }}>
@@ -407,8 +437,69 @@ function AvailabilityEditor({ patterns, overrides, onSavePattern, onSaveOverride
       </>}
 
       {mode === 'date' && <>
+        {/* Multi-select calendar */}
+        <div style={{ marginBottom:10 }}>
+          <div style={{ fontSize:12, fontWeight:700, color:C.inkMid, marginBottom:8 }}>
+            Klik datums aan — meerdere tegelijk mogelijk
+          </div>
+          <div style={{ display:'grid', gridTemplateColumns:'repeat(7,1fr)', gap:3, marginBottom:6 }}>
+            {['Ma','Di','Wo','Do','Vr','Za','Zo'].map(d => (
+              <div key={d} style={{ textAlign:'center', fontSize:10, fontWeight:700, color:C.inkMuted, padding:'4px 0' }}>{d}</div>
+            ))}
+            {calendarDates.map(date => {
+              const isSelected = selectedDates.includes(date)
+              const hasOverride = overrides[date] !== undefined
+              const isPast = date < new Date().toISOString().split('T')[0]
+              const day = new Date(date).getUTCDate()
+              return (
+                <button key={date} onClick={() => !isPast && toggleDate(date)}
+                  style={{ ...btn(), padding:'6px 2px', fontSize:12, borderRadius:7, textAlign:'center',
+                    background: isSelected ? C.jade : hasOverride ? C.sky+'22' : 'transparent',
+                    color: isSelected ? C.white : isPast ? C.borderLight : hasOverride ? C.sky : C.ink,
+                    border: `1px solid ${isSelected ? C.jade : hasOverride ? C.sky+'44' : C.borderLight}`,
+                    opacity: isPast ? 0.3 : 1,
+                    cursor: isPast ? 'default' : 'pointer',
+                    fontWeight: isSelected ? 700 : 400 }}>
+                  {day}
+                </button>
+              )
+            })}
+          </div>
+          {selectedDates.length > 0 && <>
+            <div style={{ fontSize:12, fontWeight:700, color:C.inkMid, marginBottom:8 }}>
+              {selectedDates.length} datum{selectedDates.length > 1 ? 's' : ''} geselecteerd — stel beschikbaarheid in:
+            </div>
+            <div style={{ display:'flex', gap:6, marginBottom:10 }}>
+              {[{l:'Ochtend',v:1},{l:'Middag',v:2},{l:'Avond',v:4},{l:'Hele dag',v:7}].map(({l,v}) => {
+                const active = v === 7 ? multiSlots === 7 : (multiSlots & v) > 0 && multiSlots !== 7
+                return (
+                  <button key={l} onClick={() => {
+                    if (v === 7) setMultiSlots(multiSlots === 7 ? 0 : 7)
+                    else { const t = multiSlots === 7 ? v : (active ? multiSlots & ~v : multiSlots | v); setMultiSlots(t || v) }
+                  }} style={{ ...btn(), flex:1, padding:'8px 4px', fontSize:11, borderRadius:9,
+                    background:active?C.jade+'18':'transparent',
+                    border:`1.5px solid ${active?C.jade:C.border}`,
+                    color:active?C.jade:C.inkMuted, fontWeight:active?700:500 }}>
+                    {l}
+                  </button>
+                )
+              })}
+            </div>
+            <div style={{ display:'flex', gap:8, marginBottom:10 }}>
+              <button onClick={() => { selectedDates.forEach(d => onSaveOverride(d, 0)); setSelectedDates([]); onSaved() }}
+                style={{ ...btn(), flex:1, background:C.crimsonSoft, color:C.crimson,
+                  border:`1px solid ${C.crimson}33`, padding:'9px', fontSize:12, borderRadius:9 }}>
+                Onbeschikbaar
+              </button>
+              <button onClick={saveMultiDates}
+                style={{ ...btn(), flex:2, background:C.jade, color:C.white, padding:'9px', fontSize:13, borderRadius:9 }}>
+                ✓ Opslaan voor {selectedDates.length} dag{selectedDates.length > 1 ? 'en' : ''}
+              </button>
+            </div>
+          </>}
+        </div>
         <div style={{ marginBottom:14 }}>
-          <div style={{ fontSize:12, fontWeight:700, color:C.inkMid, marginBottom:5 }}>Datum</div>
+          <div style={{ fontSize:12, fontWeight:700, color:C.inkMid, marginBottom:5 }}>Of kies één specifieke datum</div>
           <input type="date" value={selDate} onChange={e => { setSelDate(e.target.value); setDateSlots(0) }}
             style={{ width:'100%', padding:'10px 12px', borderRadius:10, border:`1px solid ${C.border}`, fontSize:14, boxSizing:'border-box' }}/>
         </div>
@@ -585,3 +676,4 @@ function SwapTab({ swapRequests, allStaff, schedule, shiftTemplates, currentWeek
     )}
   </>
 }
+
