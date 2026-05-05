@@ -4,13 +4,16 @@ import { supabase, registerPushSubscription } from '../lib/supabase'
 import { C, DEPTS, Badge, Card, Avatar, Toast, WeekNav, btn, getWeekDates, getMondayOfWeek, formatDate, DAYS, DAYS_FULL } from '../components/ui'
 
 function getWeeks() {
-  const weeks = [], now = new Date()
-  const start = new Date(getMondayOfWeek(new Date(now.getFullYear(), now.getMonth() - 1, 1)))
+  const weeks = []
+  const now = new Date()
+  const startStr = getMondayOfWeek(new Date(now.getFullYear(), now.getMonth() - 1, 1))
+  const [sy, sm, sd] = startStr.split('-').map(Number)
   for (let i = 0; i < 12; i++) {
-    const mon = new Date(start); mon.setDate(start.getDate() + i * 7)
+    const mon = new Date(Date.UTC(sy, sm - 1, sd + i * 7))
     const monStr = mon.toISOString().split('T')[0]
-    const sun = new Date(mon); sun.setDate(mon.getDate() + 6)
-    weeks.push({ monday:monStr, label:`${formatDate(monStr)} – ${formatDate(sun.toISOString().split('T')[0])}`, dates:getWeekDates(monStr) })
+    const sun = new Date(Date.UTC(sy, sm - 1, sd + i * 7 + 6))
+    const sunStr = sun.toISOString().split('T')[0]
+    weeks.push({ monday:monStr, label:`${formatDate(monStr)} – ${formatDate(sunStr)}`, dates:getWeekDates(monStr) })
   }
   return weeks
 }
@@ -98,14 +101,18 @@ export default function StaffApp() {
   }
 
   async function loadLeaves() {
-    const { data } = await supabase.from('leave_requests').select('*').eq('staff_id', me.id)
+    if (!me?.id) return
+    const { data, error } = await supabase.from('leave_requests').select('*').eq('staff_id', me.id)
+    if (error) { console.error('loadLeaves error:', error); return }
     setLeaveRequests(data || [])
   }
 
   async function loadSwaps() {
-    const { data } = await supabase.from('swap_requests')
-      .select('*, to_staff:staff!to_staff_id(name), from_staff:staff!from_staff_id(name)')
+    if (!me?.id) return
+    const { data, error } = await supabase.from('swap_requests')
+      .select('*, to_staff:staff!to_staff_id(name,color), from_staff:staff!from_staff_id(name,color)')
       .or(`from_staff_id.eq.${me.id},to_staff_id.eq.${me.id}`)
+    if (error) { console.error('loadSwaps error:', error); return }
     setSwapRequests(data || [])
   }
 
@@ -142,17 +149,22 @@ export default function StaffApp() {
   }
 
   async function requestLeave(date, reason) {
-    const { error } = await supabase.from('leave_requests').insert({ staff_id:me.id, date, reason })
-    if (error) { show('Fout: ' + error.message); return }
+    if (!me?.id) { show('Fout: niet ingelogd'); return }
+    const { data, error } = await supabase.from('leave_requests')
+      .insert({ staff_id:me.id, date, reason })
+      .select()
+    if (error) { show('Fout: ' + error.message); console.error('leave error:', error); return }
     await loadLeaves()
     show('✓ Vrije dag aangevraagd')
   }
 
   async function requestSwap(fromDate, toStaffId, toDate) {
+    if (!me?.id) { show('Fout: niet ingelogd'); return }
+    if (!toStaffId) { show('Kies een collega'); return }
     const { error } = await supabase.from('swap_requests').insert({
       from_staff_id:me.id, to_staff_id:toStaffId, from_date:fromDate, to_date:toDate
     })
-    if (error) { show('Fout: ' + error.message); return }
+    if (error) { show('Fout: ' + error.message); console.error('swap error:', error); return }
     await loadSwaps()
     show('✓ Ruilverzoek verstuurd')
   }
@@ -676,4 +688,3 @@ function SwapTab({ swapRequests, allStaff, schedule, shiftTemplates, currentWeek
     )}
   </>
 }
-
