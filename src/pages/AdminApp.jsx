@@ -13,15 +13,23 @@ const DEPT_KEYS = Object.keys(DEPTS)
 function getWeeks() {
   const weeks = []
   const now = new Date()
-  // Start from beginning of previous month, show 3 months ahead
-  const start = new Date(getMondayOfWeek(new Date(now.getFullYear(), now.getMonth() - 1, 1)))
+  // Get current UTC date parts to avoid any timezone issues
+  const y = now.getUTCFullYear()
+  const m = now.getUTCMonth() + 1 // 1-12
+  // Start from first monday of previous month
+  const startStr = getMondayOfWeek(new Date(Date.UTC(y, m - 2, 1)))
+  const [sy, sm, sd] = startStr.split('-').map(Number)
   for (let i = 0; i < 20; i++) {
-    const mon = new Date(start)
-    mon.setDate(start.getDate() + i * 7)
-    const monStr = mon.toISOString().split('T')[0]
-    const sun = new Date(mon); sun.setDate(mon.getDate() + 6)
-    const label = `${formatDate(monStr)} – ${formatDate(sun.toISOString().split('T')[0])}`
-    weeks.push({ monday: monStr, label, dates: getWeekDates(monStr) })
+    // Pure UTC date arithmetic
+    const monDate = new Date(Date.UTC(sy, sm - 1, sd + i * 7))
+    const sunDate = new Date(Date.UTC(sy, sm - 1, sd + i * 7 + 6))
+    const monStr = monDate.toISOString().slice(0, 10)
+    const sunStr = sunDate.toISOString().slice(0, 10)
+    weeks.push({
+      monday: monStr,
+      label: `${formatDate(monStr)} – ${formatDate(sunStr)}`,
+      dates: getWeekDates(monStr)
+    })
   }
   return weeks
 }
