@@ -1338,19 +1338,22 @@ function TemplateTab({ templateSlots: initialSlots, shiftTemplates, peakMoments,
                 // Get slots from source day using localSlots
                 const sourceSlots = localSlots.filter(s => s.is_recurring && s.day_of_week === di)
                 if (!sourceSlots.length) { show(`Geen slots op ${d}`); return }
-                // Delete existing slots for target day from DB
-                const targetSlots = localSlots.filter(s => s.is_recurring && s.day_of_week === dayTab)
-                await Promise.all(targetSlots.map(s =>
-                  supabase.from('template_slots').delete().eq('id', s.id)
-                ))
+                // Delete ALL existing slots for target day from DB (hard delete by org+day)
+                const { error: delErr } = await supabase.from('template_slots').delete()
+                  .eq('org_id', orgId)
+                  .eq('day_of_week', dayTab)
+                  .eq('is_recurring', true)
+                if (delErr) { show('Fout bij verwijderen: ' + delErr.message); return }
                 // Insert copies for target day in DB
                 const inserts = sourceSlots.map(s => ({
                   org_id: orgId, day_of_week: dayTab,
                   dept: s.dept, shift_name: s.shift_name,
                   count: s.count, is_recurring: true,
+                  bezetting_template_id: s.bezetting_template_id || null,
                 }))
-                const { data: newSlots } = await supabase
+                const { data: newSlots, error: insErr } = await supabase
                   .from('template_slots').insert(inserts).select()
+                if (insErr) { show('Fout bij kopiëren: ' + insErr.message); return }
                 // Update local state with DB-returned rows (includes real IDs)
                 setLocalSlots(ls => [
                   ...ls.filter(s => !(s.is_recurring && s.day_of_week === dayTab)),
