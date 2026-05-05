@@ -66,6 +66,8 @@ export default function AdminApp() {
   const [overtimeLog, setOvertimeLog] = useState({})
   const [settings, setSettings] = useState({})
   const [generating, setGenerating] = useState(false)
+  const [openShifts, setOpenShifts] = useState([])
+  const [rosterGaps, setRosterGaps] = useState([]) // unfilled template slots
   const [recurringPeaks, setRecurringPeaks] = useState({ 4:4, 5:7, 6:2 })
   const [scheduleMode, setScheduleMode] = useState(50) // 0=min cost, 100=max quality // Fri eve, Sat all, Sun midday
 
@@ -165,7 +167,7 @@ export default function AdminApp() {
       loadShifts(), loadTemplateSlots(), loadBezettingTemplates(),
       loadPeaks(), loadHolidays(), loadAssignments(),
       loadLeaves(), loadSwaps(), loadAvailability(),
-      loadCapacities(), loadSettings(), loadOvertime(),
+      loadCapacities(), loadSettings(), loadOvertime(), loadOpenShifts(),
     ])
     setLoading(false)
   }
@@ -277,6 +279,42 @@ export default function AdminApp() {
     })
     setCapacities(map)
   }
+  function calcRosterGaps(schedule, slots, dates) {
+    // Compare template slots vs actual assignments
+    const gaps = []
+    slots.forEach(slot => {
+      if (!slot.is_recurring) return
+      const di = slot.day_of_week
+      if (di >= dates.length) return
+      const date = dates[di]
+      // Count how many staff are assigned in this dept on this day
+      // We can't easily know dept from assignment, so count by shift
+      const assigned = Object.values(schedule).filter(row => row[di] === slot.shift_name).length
+      const needed = slot.count
+      if (assigned < needed) {
+        gaps.push({
+          date,
+          day: di,
+          dept: slot.dept,
+          shift_name: slot.shift_name,
+          needed,
+          assigned,
+          missing: needed - assigned,
+        })
+      }
+    })
+    return gaps
+  }
+
+  async function loadOpenShifts() {
+    const { data } = await supabase.from('open_shifts')
+      .select('*, original_staff:staff!original_staff_id(name,color), claimed_by:staff!claimed_by_id(name,color)')
+      .eq('org_id', orgId)
+      .eq('status', 'open')
+      .order('date')
+    setOpenShifts(data || [])
+  }
+
   async function loadSettings() {
     const { data } = await supabase.from('org_settings').select('*').eq('org_id', orgId).single()
     setSettings(data || {})
@@ -413,7 +451,13 @@ export default function AdminApp() {
       }
 
       await loadAssignments()
-      show('🪄 Rooster gegenereerd en opgeslagen!')
+      // Calculate unfilled slots
+      const gaps = calcRosterGaps(result.schedule, templateSlots, currentWeek.dates)
+      setRosterGaps(gaps)
+      const msg = gaps.length > 0
+        ? `🪄 Rooster gegenereerd — ⚠️ ${gaps.reduce((a,g)=>a+g.missing,0)} diensten niet ingevuld`
+        : '🪄 Rooster gegenereerd en volledig ingevuld!'
+      show(msg)
     } catch (e) {
       show('Fout: ' + e.message)
     }
@@ -537,6 +581,51 @@ export default function AdminApp() {
               </div>
               <WeekNav week={weekIdx} weeks={weeks.map(w=>w.label)} setWeek={setWeekIdx} />
             </div>
+
+            {/* Niet ingevulde diensten alert */}
+            {rosterGaps.length > 0 && (
+              <div style={{ background:C.crimsonSoft, border:`1px solid ${C.crimson}44`, borderRadius:14,
+                padding:'12px 18px' }}>
+                <div style={{ fontWeight:800, color:C.crimson, fontSize:14, marginBottom:8 }}>
+                  ⚠️ {rosterGaps.reduce((a,g)=>a+g.missing,0)} diensten niet ingevuld na genereren
+                </div>
+                <div style={{ display:'flex', gap:6, flexWrap:'wrap' }}>
+                  {rosterGaps.map((g, i) => (
+                    <div key={i} style={{ background:C.surface, border:`1px solid ${C.crimson}33`,
+                      borderRadius:8, padding:'5px 10px', fontSize:11 }}>
+                      <span style={{ fontWeight:700, color:C.crimson }}>{DAYS[g.day]}</span>
+                      <span style={{ color:C.inkMuted, marginLeft:4 }}>{DEPTS[g.dept]?.icon} {g.shift_name}</span>
+                      <span style={{ color:C.crimson, marginLeft:4 }}>({g.assigned}/{g.needed})</span>
+                    </div>
+                  ))}
+                </div>
+                <div style={{ color:C.inkMuted, fontSize:11, marginTop:8 }}>
+                  Niet genoeg beschikbaar personeel voor deze slots. Controleer de beschikbaarheid of pas de template aan.
+                </div>
+              </div>
+            )}
+
+            {/* Open diensten alert */}
+            {openShifts.length > 0 && (
+              <div style={{ background:C.amberSoft, border:`1px solid ${C.amber}44`, borderRadius:14,
+                padding:'12px 18px', display:'flex', alignItems:'center', justifyContent:'space-between', flexWrap:'wrap', gap:10 }}>
+                <div style={{ display:'flex', alignItems:'center', gap:10 }}>
+                  <span style={{ fontSize:20 }}>🔓</span>
+                  <div>
+                    <div style={{ fontWeight:800, color:C.amber, fontSize:14 }}>
+                      {openShifts.length} open dienst{openShifts.length > 1 ? 'en' : ''} — niet bezet
+                    </div>
+                    <div style={{ color:C.inkMuted, fontSize:12 }}>
+                      {openShifts.map(o => `${o.date} ${o.shift_name}`).join(' · ')}
+                    </div>
+                  </div>
+                </div>
+                <button onClick={() => setTab('ziekte')}
+                  style={{ ...btn(), background:C.amber, color:C.white, padding:'8px 14px', fontSize:13, borderRadius:10 }}>
+                  Beheren →
+                </button>
+              </div>
+            )}
 
             {/* KPIs */}
             <div style={{ display:'grid', gridTemplateColumns:'repeat(auto-fill,minmax(140px,1fr))', gap:10 }}>
@@ -670,6 +759,8 @@ export default function AdminApp() {
             weekIdx={weekIdx} weeks={weeks} setWeekIdx={setWeekIdx}
             onGenerate={handleGenerate} generating={generating}
             onPublish={handlePublish}
+            openShifts={openShifts}
+            rosterGaps={rosterGaps}
             onDelete={currentRoster && !isPublished ? handleDeleteRoster : null}
             onCellChange={async (staffId, di, shiftName) => {
               const roster = currentRoster || (await supabase.from('rosters').upsert({
@@ -774,7 +865,7 @@ export default function AdminApp() {
 
 function RoosterTab({ allStaff, currentSchedule, currentWeek, shiftTemplates, peakMoments,
   leaveRequests, availPatterns, availOverrides, capacities, isPublished,
-  weekIdx, weeks, setWeekIdx, onGenerate, generating, onPublish, onDelete, onCellChange }) {
+  weekIdx, weeks, setWeekIdx, onGenerate, generating, onPublish, onDelete, openShifts, rosterGaps, onCellChange }) {
   const [editCell, setEditCell] = useState(null)
 
   const staffByDept = useMemo(() => {
@@ -827,16 +918,54 @@ function RoosterTab({ allStaff, currentSchedule, currentWeek, shiftTemplates, pe
       <div style={{ display:'flex', gap:5 }}>
         {DAYS.map((d, di) => {
           const peak = peakMoments.find(p => p.date === currentWeek.dates[di])
+          const dayOpenShifts = (openShifts||[]).filter(o => o.date === currentWeek.dates[di])
           return (
             <div key={d} style={{ flex:1, textAlign:'center', padding:'5px 3px', borderRadius:8,
               background:peak?C.crimsonSoft:'transparent',
               border:`1px solid ${peak?C.crimson+'44':'#EEE9E0'}` }}>
               <div style={{ fontWeight:700, fontSize:11, color:peak?C.crimson:C.inkMuted }}>{d}</div>
               {peak && <div style={{ fontSize:8, color:C.crimson }}>🔥</div>}
+              {dayOpenShifts.length > 0 && (
+                <div style={{ fontSize:8, color:C.amber, fontWeight:700 }}>🔓{dayOpenShifts.length}</div>
+              )}
             </div>
           )
         })}
       </div>
+
+      {/* Niet ingevulde diensten banner */}
+      {(rosterGaps||[]).length > 0 && (
+        <div style={{ background:C.crimsonSoft, border:`1px solid ${C.crimson}44`, borderRadius:12, padding:'10px 14px' }}>
+          <div style={{ fontWeight:700, color:C.crimson, fontSize:13, marginBottom:6 }}>
+            ⚠️ Niet ingevulde diensten ({rosterGaps.reduce((a,g)=>a+g.missing,0)})
+          </div>
+          <div style={{ display:'flex', gap:6, flexWrap:'wrap' }}>
+            {rosterGaps.map((g, i) => (
+              <div key={i} style={{ background:C.surface, border:`1px solid ${C.crimson}33`, borderRadius:8, padding:'4px 10px', fontSize:11 }}>
+                <span style={{ fontWeight:700, color:C.crimson }}>{DAYS[g.day]}</span>
+                <span style={{ color:C.inkMuted, marginLeft:4 }}>{DEPTS[g.dept]?.icon} {g.shift_name} ({g.assigned}/{g.needed})</span>
+              </div>
+            ))}
+          </div>
+        </div>
+      )}
+
+      {/* Open shifts banner */}
+      {(openShifts||[]).filter(o => currentWeek.dates.includes(o.date)).length > 0 && (
+        <div style={{ background:C.amberSoft, border:`1px solid ${C.amber}44`, borderRadius:12, padding:'10px 14px' }}>
+          <div style={{ fontWeight:700, color:C.amber, fontSize:13, marginBottom:6 }}>🔓 Open diensten deze week</div>
+          <div style={{ display:'flex', gap:6, flexWrap:'wrap' }}>
+            {(openShifts||[]).filter(o => currentWeek.dates.includes(o.date)).map(o => (
+              <div key={o.id} style={{ background:C.surface, border:`1px solid ${C.amber}44`,
+                borderRadius:8, padding:'5px 10px', fontSize:12 }}>
+                <span style={{ fontWeight:700 }}>{DAYS[currentWeek.dates.indexOf(o.date)]}</span>
+                <span style={{ color:C.inkMuted, marginLeft:4 }}>{o.shift_name}</span>
+                {o.original_staff && <span style={{ color:C.inkMuted, marginLeft:4 }}>({o.original_staff.name})</span>}
+              </div>
+            ))}
+          </div>
+        </div>
+      )}
 
       {/* Roster by department */}
       {DEPT_KEYS.map(dk => {
@@ -1794,11 +1923,39 @@ function PersoneelTab({ allStaff, capacities, orgId, onReload, show, shiftTempla
 
 function ZiekteTab({ allStaff, currentSchedule, currentWeek, shiftTemplates, orgId, onReload, show }) {
   const [openShifts, setOpenShifts] = useState([])
+  const [rosterGaps, setRosterGaps] = useState([]) // unfilled template slots
   const [sickModal, setSickModal] = useState(false)
   const [sickForm, setSickForm] = useState({ staffId:'', di:0 })
   const [claimModal, setClaimModal] = useState(null)
 
   useEffect(() => { loadOpenShifts() }, [currentWeek.monday])
+
+  function calcRosterGaps(schedule, slots, dates) {
+    // Compare template slots vs actual assignments
+    const gaps = []
+    slots.forEach(slot => {
+      if (!slot.is_recurring) return
+      const di = slot.day_of_week
+      if (di >= dates.length) return
+      const date = dates[di]
+      // Count how many staff are assigned in this dept on this day
+      // We can't easily know dept from assignment, so count by shift
+      const assigned = Object.values(schedule).filter(row => row[di] === slot.shift_name).length
+      const needed = slot.count
+      if (assigned < needed) {
+        gaps.push({
+          date,
+          day: di,
+          dept: slot.dept,
+          shift_name: slot.shift_name,
+          needed,
+          assigned,
+          missing: needed - assigned,
+        })
+      }
+    })
+    return gaps
+  }
 
   async function loadOpenShifts() {
     const { data } = await supabase.from('open_shifts')
@@ -2216,6 +2373,5 @@ function InstellingenTab({ settings, orgId, shiftTemplates, onReload, show }) {
         </div>
       )}
     </div>
-    
   )
 }
