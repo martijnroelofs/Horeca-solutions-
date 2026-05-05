@@ -35,6 +35,7 @@ export default function StaffApp() {
   const [availPatterns, setAvailPatterns] = useState({})
   const [availOverrides, setAvailOverrides] = useState({})
   const [pushEnabled, setPushEnabled] = useState(false)
+  const [openShifts, setOpenShifts] = useState([])
 
   const weeks = getWeeks()
   const currentWeek = weeks[weekIdx]
@@ -60,7 +61,7 @@ export default function StaffApp() {
 
   async function loadAll() {
     setLoading(true)
-    await Promise.all([loadAssignments(), loadShifts(), loadStaff(), loadLeaves(), loadSwaps(), loadAvailability()])
+    await Promise.all([loadAssignments(), loadShifts(), loadStaff(), loadLeaves(), loadSwaps(), loadAvailability(), loadOpenShifts()])
     setLoading(false)
   }
 
@@ -86,6 +87,15 @@ export default function StaffApp() {
       if (di >= 0) byWeek[wk][di] = a.shift_name
     })
     setMyAssignments(byWeek)
+  }
+
+  async function loadOpenShifts() {
+    const { data } = await supabase.from('open_shifts')
+      .select('*, original_staff:staff!original_staff_id(name)')
+      .eq('org_id', me.org_id)
+      .eq('status', 'open')
+      .order('date')
+    setOpenShifts(data || [])
   }
 
   async function loadShifts() {
@@ -125,6 +135,15 @@ export default function StaffApp() {
     ;(ovs || []).forEach(o => { ovMap[o.date] = o.slots })
     setAvailPatterns(patMap)
     setAvailOverrides(ovMap)
+  }
+
+  async function claimOpenShift(openShiftId) {
+    const { error } = await supabase.from('open_shifts')
+      .update({ status: 'claimed', claimed_by_id: me.id })
+      .eq('id', openShiftId)
+    if (error) { show('Fout: ' + error.message); return }
+    await loadOpenShifts()
+    show('✓ Dienst geclaimd — manager keurt goed')
   }
 
   async function enablePush() {
@@ -304,6 +323,42 @@ export default function StaffApp() {
               </Card>
             )
           })}
+          {/* Open diensten */}
+          {openShifts.filter(o => currentWeek.dates.includes(o.date)).length > 0 && (
+            <div style={{ background:C.amberSoft, border:`1px solid ${C.amber}44`, borderRadius:14, padding:'14px 16px' }}>
+              <div style={{ fontWeight:800, color:C.amber, fontSize:14, marginBottom:10 }}>
+                🔓 Open diensten — claimen?
+              </div>
+              {openShifts.filter(o => currentWeek.dates.includes(o.date)).map(o => {
+                const di = currentWeek.dates.indexOf(o.date)
+                const tmpl = o.shift_name && shiftTemplates[o.shift_name]
+                return (
+                  <div key={o.id} style={{ background:C.surface, border:`1px solid ${C.amber}44`,
+                    borderRadius:12, padding:'12px 14px', marginBottom:8,
+                    display:'flex', justifyContent:'space-between', alignItems:'center', flexWrap:'wrap', gap:8 }}>
+                    <div>
+                      <div style={{ fontWeight:700, color:C.ink, fontSize:14 }}>
+                        {DAYS_FULL[di]} — {o.shift_name}
+                      </div>
+                      <div style={{ color:C.inkMuted, fontSize:12, marginTop:2 }}>
+                        {tmpl ? `${tmpl.start_time}–${tmpl.end_time}` : ''}
+                        {o.original_staff ? ` · Was: ${o.original_staff.name}` : ''}
+                      </div>
+                    </div>
+                    {!schedule[di] ? (
+                      <button onClick={() => claimOpenShift(o.id)}
+                        style={{ ...btn(), background:C.jade, color:C.white, padding:'8px 16px', fontSize:13, borderRadius:10 }}>
+                        ✋ Claimen
+                      </button>
+                    ) : (
+                      <span style={{ color:C.inkMuted, fontSize:12 }}>Al ingeroosterd</span>
+                    )}
+                  </div>
+                )
+              })}
+            </div>
+          )}
+
           {isPublished && (
             <button onClick={() => {
               schedule.forEach((sh, di) => {
@@ -688,4 +743,3 @@ function SwapTab({ swapRequests, allStaff, schedule, shiftTemplates, currentWeek
     )}
   </>
 }
-
