@@ -1274,10 +1274,23 @@ function TemplateTab({ templateSlots: initialSlots, shiftTemplates, peakMoments,
           <div style={{ fontWeight:900, fontSize:20, color:C.ink }}>Bezettingstemplate</div>
           <div style={{ color:C.inkMuted, fontSize:13, marginTop:2 }}>Maak meerdere templates voor verschillende situaties (normaal, vakantie, kerst etc.)</div>
         </div>
-        <button onClick={() => setShowNewTmpl(v => !v)}
-          style={{ ...btn(), background:C.ink, color:C.white, padding:'8px 16px', fontSize:13, borderRadius:10 }}>
-          ＋ Nieuwe template
-        </button>
+        <div style={{ display:'flex', gap:8 }}>
+          <button onClick={async () => {
+            if (!window.confirm('Weet je zeker dat je ALLE slots van dit template wilt verwijderen?')) return
+            await supabase.from('template_slots').delete()
+              .eq('org_id', orgId)
+              .eq('bezetting_template_id', activeTemplateId)
+            setLocalSlots([])
+            show('✓ Alle slots verwijderd')
+          }} style={{ ...btn(), background:C.crimsonSoft, color:C.crimson,
+            border:`1px solid ${C.crimson}44`, padding:'8px 14px', fontSize:13, borderRadius:10 }}>
+            🗑 Wis template
+          </button>
+          <button onClick={() => setShowNewTmpl(v => !v)}
+            style={{ ...btn(), background:C.ink, color:C.white, padding:'8px 16px', fontSize:13, borderRadius:10 }}>
+            ＋ Nieuwe template
+          </button>
+        </div>
       </div>
 
       {/* New template form */}
@@ -2393,4 +2406,3 @@ function InstellingenTab({ settings, orgId, shiftTemplates, onReload, show }) {
     </div>
   )
 }
-
