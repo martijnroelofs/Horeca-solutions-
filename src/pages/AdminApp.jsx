@@ -376,16 +376,15 @@ export default function AdminApp() {
 
       await supabase.from('roster_assignments').delete().eq('roster_id', roster.id)
 
-      const toInsert = []
+      const weekMap = {}
       Object.entries(result.schedule).forEach(([staffId, shifts]) => {
         shifts.forEach((shiftName, di) => {
           if (!shiftName) return
-          toInsert.push({
-            roster_id: roster.id, staff_id: staffId,
-            date: week.dates[di], shift_name: shiftName,
-          })
+          const key = `${staffId}_${week.dates[di]}`
+          weekMap[key] = { roster_id: roster.id, staff_id: staffId, date: week.dates[di], shift_name: shiftName }
         })
       })
+      const toInsert = Object.values(weekMap)
       if (toInsert.length) await supabase.from('roster_assignments').insert(toInsert)
     }
 
@@ -437,17 +436,19 @@ export default function AdminApp() {
       // Delete old assignments for this week
       await supabase.from('roster_assignments').delete().eq('roster_id', roster.id)
 
-      // Insert new assignments
-      const toInsert = []
+      // Insert new assignments - dedup by staff_id+date to prevent duplicates
+      const insertMap = {}
       Object.entries(result.schedule).forEach(([staffId, shifts]) => {
         shifts.forEach((shiftName, di) => {
           if (!shiftName) return
-          toInsert.push({
+          const key = `${staffId}_${currentWeek.dates[di]}`
+          insertMap[key] = {
             roster_id: roster.id, staff_id: staffId,
             date: currentWeek.dates[di], shift_name: shiftName,
-          })
+          }
         })
       })
+      const toInsert = Object.values(insertMap)
       if (toInsert.length) await supabase.from('roster_assignments').insert(toInsert)
 
       // Save overtime log
