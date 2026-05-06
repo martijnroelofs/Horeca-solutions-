@@ -208,6 +208,7 @@ export function generateSchedule({
         let assigned = 0
         finalPool.forEach(s => {
           if (assigned >= slot.count) return
+          if (dk === 'keuken') console.log('KEUKEN assign:', s.name, 'day:', di, 'shift:', slot.shift_name, 'already has:', schedule[s.id][di])
           schedule[s.id][di] = slot.shift_name
           hoursPlanned[s.id] += shiftDuration
           lastShiftEnd[s.id] = shift.end_time
