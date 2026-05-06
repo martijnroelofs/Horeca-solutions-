@@ -130,6 +130,11 @@ export default function AdminApp() {
   }
 
   // ── Load all data ─────────────────────────────────────────────────────────
+  // Reload template slots when active template changes
+  useEffect(() => {
+    if (activeTemplateId) loadTemplateSlots(activeTemplateId)
+  }, [activeTemplateId])
+
   useEffect(() => {
     if (!orgId) return
     loadAll()
@@ -162,9 +167,11 @@ export default function AdminApp() {
     setLoading(true)
     // Load staff first since other functions depend on staff IDs
     await loadStaff()
+    // Load bezetting templates first so we know the active template
+    await loadBezettingTemplates()
     // Then load everything else in parallel
     await Promise.all([
-      loadShifts(), loadTemplateSlots(), loadBezettingTemplates(),
+      loadShifts(), loadTemplateSlots(), 
       loadPeaks(), loadHolidays(), loadAssignments(),
       loadLeaves(), loadSwaps(), loadAvailability(),
       loadCapacities(), loadSettings(), loadOvertime(), loadOpenShifts(),
@@ -194,10 +201,11 @@ export default function AdminApp() {
     setShiftTemplates(map)
   }
   async function loadTemplateSlots(templateId) {
+    const tid = templateId || activeTemplateId
     const query = supabase.from('template_slots').select('*').eq('org_id', orgId)
-    const { data } = templateId
-      ? await query.eq('bezetting_template_id', templateId)
-      : await query
+    const { data } = tid
+      ? await query.eq('bezetting_template_id', tid)
+      : await query.not('bezetting_template_id', 'is', null)
     setTemplateSlots(data || [])
   }
   async function loadPeaks() {
