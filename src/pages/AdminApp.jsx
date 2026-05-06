@@ -1236,6 +1236,7 @@ function TemplateTab({ templateSlots: initialSlots, shiftTemplates, peakMoments,
       org_id: orgId, day_of_week: dayTab, dept: dk,
       shift_name: (Object.keys(shiftTemplates).sort((a,b) => { const ta = shiftTemplates[a]?.start_time||''; const tb = shiftTemplates[b]?.start_time||''; return ta.localeCompare(tb); }))[0] || 'Ochtend',
       count: 1, is_recurring: true,
+      bezetting_template_id: activeTemplateId || null,
     }
     const { data } = await supabase.from('template_slots').insert(newSlot).select().single()
     if (data) setLocalSlots(ls => [...ls, data])
