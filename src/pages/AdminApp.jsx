@@ -983,12 +983,38 @@ function RoosterTab({ allStaff, currentSchedule, currentWeek, shiftTemplates, pe
         </div>
       )}
 
-      {/* Roster by department */}
+      {/* Roster by department - slot based view */}
       {DEPT_KEYS.map(dk => {
         const dept = DEPTS[dk]
-        const ds = staffByDept[dk]
-        if (!ds.length) return null
-        const dayCount = DAYS.map((_, di) => ds.filter(s => currentSchedule[s.id]?.[di]).length)
+        // Get unique shifts for this dept from template slots
+        const deptShifts = [...new Set(
+          templateSlots
+            .filter(s => s.dept === dk && s.is_recurring)
+            .sort((a,b) => {
+              const ta = shiftTemplates[a.shift_name]?.start_time || ''
+              const tb = shiftTemplates[b.shift_name]?.start_time || ''
+              return ta.localeCompare(tb)
+            })
+            .map(s => s.shift_name)
+        )]
+        if (!deptShifts.length) return null
+
+        // Build slot grid: for each shift, for each day, who is assigned?
+        const slotGrid = deptShifts.map(shiftName => {
+          const shift = shiftTemplates[shiftName]
+          return {
+            shiftName,
+            shift,
+            days: DAYS.map((_, di) => {
+              // Find staff assigned to this dept+shift on this day
+              const assigned = allStaff.filter(s =>
+                s.depts?.includes(dk) &&
+                currentSchedule[s.id]?.[di] === shiftName
+              )
+              return assigned
+            })
+          }
+        })
 
         return (
           <div key={dk}>
@@ -997,124 +1023,66 @@ function RoosterTab({ allStaff, currentSchedule, currentWeek, shiftTemplates, pe
               borderRadius:12, marginBottom:6 }}>
               <span style={{ fontSize:18 }}>{dept.icon}</span>
               <span style={{ fontWeight:800, color:dept.color, fontSize:14 }}>{dept.label}</span>
-              <div style={{ marginLeft:'auto', display:'flex', gap:4 }}>
-                {dayCount.map((n, i) => {
-                  const peak = peakMoments.find(p => p.date === currentWeek.dates[i])
-                  const need = dept.min + (peak ? 1 : 0)
-                  return (
-                    <div key={i} style={{ width:28, textAlign:'center' }}>
-                      <div style={{ fontWeight:800, fontSize:12, color:n>=need?dept.color:C.crimson }}>{n}</div>
-                      <div style={{ fontSize:8, color:C.inkMuted }}>{DAYS[i]}</div>
-                    </div>
-                  )
-                })}
-              </div>
             </div>
-
             <Card style={{ padding:12, overflowX:'auto', marginBottom:4 }}>
               <table style={{ width:'100%', borderCollapse:'separate', borderSpacing:'0 3px', minWidth:600 }}>
                 <thead>
                   <tr>
-                    <th style={{ textAlign:'left', color:C.inkMuted, fontSize:11, fontWeight:700, padding:'0 8px 8px 0', minWidth:130 }}>Medewerker</th>
+                    <th style={{ textAlign:'left', color:C.inkMuted, fontSize:11, fontWeight:700, padding:'0 8px 8px 0', minWidth:120 }}>Dienst</th>
                     {DAYS_FULL.map((d, i) => (
                       <th key={d} style={{ color:C.inkMuted, fontSize:10, fontWeight:700, padding:'0 3px 8px', textAlign:'center', minWidth:90 }}>
                         {DAYS[i]}<br/><span style={{ fontSize:9, fontWeight:400 }}>{formatDate(currentWeek.dates[i])}</span>
                       </th>
                     ))}
-                    <th style={{ color:C.inkMuted, fontSize:10, padding:'0 0 8px 8px', textAlign:'right', minWidth:60 }}>Uren</th>
                   </tr>
                 </thead>
                 <tbody>
-                  {ds.map(s => {
-                    const row = currentSchedule[s.id] || Array(7).fill(null)
-                    const hours = row.reduce((a, sh) => a + (sh && shiftTemplates[sh] ? (parseTime(shiftTemplates[sh].end_time) - parseTime(shiftTemplates[sh].start_time) - shiftTemplates[sh].break_minutes) / 60 : 0), 0)
-                    const over = hours > (s.contract_hours || 20)
-                    const cap = capacities[s.id]?.[dk] ?? 5
-
-                    return (
-                      <tr key={s.id}>
-                        <td style={{ padding:'3px 8px 3px 0' }}>
-                          <div style={{ display:'flex', alignItems:'center', gap:7 }}>
-                            <Avatar name={s.name} color={s.color} size={28}/>
-                            <div>
-                              <div style={{ fontWeight:700, fontSize:12, color:C.ink }}>{s.name.split(' ')[0]}</div>
-                              <div style={{ display:'flex', alignItems:'center', gap:3 }}>
-                                <div style={{ width:24, height:4, background:'#EBE7DE', borderRadius:99, overflow:'hidden' }}>
-                                  <div style={{ height:'100%', width:`${cap*10}%`, background:cap>=8?C.jade:cap>=5?dept.color:C.crimson, borderRadius:99 }}/>
+                  {slotGrid.map(({ shiftName, shift, days }) => (
+                    <tr key={shiftName}>
+                      <td style={{ padding:'3px 8px 3px 0' }}>
+                        <div style={{ fontWeight:700, fontSize:12, color:dept.color }}>{shiftName}</div>
+                        {shift && <div style={{ color:C.inkMuted, fontSize:10 }}>{shift.start_time}–{shift.end_time}</div>}
+                      </td>
+                      {days.map((staffList, di) => {
+                        const peak = peakMoments.find(p => p.date === currentWeek.dates[di])
+                        const openHere = (openShifts||[]).find(o =>
+                          o.date === currentWeek.dates[di] && o.shift_name === shiftName
+                        )
+                        return (
+                          <td key={di} style={{ padding:'0 3px', verticalAlign:'top' }}>
+                            <div style={{ minHeight:36, padding:'3px', borderRadius:7,
+                              background:peak ? dept.color+'10' : 'transparent',
+                              border:`1px solid ${staffList.length ? dept.color+'33' : '#EEE9E0'}` }}>
+                              {staffList.length === 0 && openHere && (
+                                <div style={{ fontSize:9, color:C.amber, fontWeight:700, textAlign:'center', paddingTop:4 }}>🔓 Open</div>
+                              )}
+                              {staffList.length === 0 && !openHere && (
+                                <div style={{ fontSize:9, color:C.borderLight, textAlign:'center', paddingTop:4 }}>—</div>
+                              )}
+                              {staffList.map(s => (
+                                <div key={s.id} onClick={() => !isPublished && setEditCell({ sid:s.id, day:di })}
+                                  style={{ display:'flex', alignItems:'center', gap:4, padding:'2px 4px',
+                                    borderRadius:5, marginBottom:2, cursor:isPublished?'default':'pointer',
+                                    background:s.color+'18' }}>
+                                  <div style={{ width:6, height:6, borderRadius:99, background:s.color, flexShrink:0 }}/>
+                                  <span style={{ fontSize:10, fontWeight:700, color:C.ink, whiteSpace:'nowrap' }}>
+                                    {s.name.split(' ')[0]}
+                                  </span>
                                 </div>
-                                <span style={{ color:C.inkMuted, fontSize:9 }}>{cap}</span>
-                              </div>
+                              ))}
                             </div>
-                          </div>
-                        </td>
-                        {row.map((sh, di) => {
-                          const lv = leaveRequests.find(l => l.staff_id===s.id && l.date===currentWeek.dates[di] && l.status==='approved')
-                          const isEd = editCell?.sid===s.id && editCell?.day===di
-                          const shift = sh && shiftTemplates[sh]
-
-                          let cell
-                          if (lv) cell = (
-                            <div style={{ background:C.amberSoft, border:`1px solid ${C.amber}44`, borderRadius:7, padding:'5px 3px', textAlign:'center' }}>
-                              <div style={{ fontSize:9 }}>🏖</div>
-                              <div style={{ color:C.amber, fontSize:8, fontWeight:700 }}>Vrij</div>
-                            </div>
-                          )
-                          else if (isEd) cell = (
-                            <div style={{ position:'relative', zIndex:10 }}>
-                              <div style={{ position:'absolute', top:'100%', left:0, background:C.surface,
-                                border:`1px solid ${C.border}`, borderRadius:10, padding:6,
-                                boxShadow:'0 8px 30px rgba(0,0,0,.12)', zIndex:20, minWidth:150 }}>
-                                <div onClick={() => { onCellChange(s.id, di, null); setEditCell(null) }}
-                                  style={{ padding:'6px 10px', borderRadius:7, cursor:'pointer', color:C.inkMuted, fontSize:12, fontWeight:600 }}>— Vrij</div>
-                                {Object.keys(shiftTemplates).sort((a,b) => { const ta = shiftTemplates[a]?.start_time||''; const tb = shiftTemplates[b]?.start_time||''; return ta.localeCompare(tb); }).map(n => {
-                                  const t = shiftTemplates[n]
-                                  return (
-                                    <div key={n} onClick={() => { onCellChange(s.id, di, n); setEditCell(null) }}
-                                      style={{ padding:'6px 10px', borderRadius:7, cursor:'pointer',
-                                        color:dept.color, fontSize:12, fontWeight:700,
-                                        background:sh===n?dept.color+'18':'transparent',
-                                        display:'flex', justifyContent:'space-between', alignItems:'center' }}>
-                                      <span>{n}</span>
-                                      <span style={{ color:C.inkMuted, fontSize:10 }}>{t.start_time}–{t.end_time}</span>
-                                    </div>
-                                  )
-                                })}
-                              </div>
-                            </div>
-                          )
-                          else if (sh && shift) cell = (
-                            <div onClick={() => !isPublished && setEditCell({ sid:s.id, day:di })}
-                              style={{ background:dept.color+'18', border:`1.5px solid ${dept.color}55`,
-                                borderRadius:7, padding:'4px 3px', textAlign:'center',
-                                cursor:isPublished?'default':'pointer' }}>
-                              <div style={{ color:dept.color, fontSize:10, fontWeight:800 }}>{sh}</div>
-                              <div style={{ color:dept.color+'AA', fontSize:8, fontWeight:600 }}>{shift.start_time}–{shift.end_time}</div>
-                            </div>
-                          )
-                          else cell = (
-                            <div onClick={() => !isPublished && setEditCell({ sid:s.id, day:di })}
-                              style={{ border:`1.5px dashed ${C.border}`, borderRadius:7, padding:'8px 3px',
-                                textAlign:'center', opacity:0.4, cursor:isPublished?'default':'pointer' }}>
-                              <div style={{ color:C.inkMuted, fontSize:10 }}>＋</div>
-                            </div>
-                          )
-
-                          return <td key={di} style={{ padding:'0 3px', position:'relative' }}>{cell}</td>
-                        })}
-                        <td style={{ textAlign:'right', paddingLeft:6 }}>
-                          <span style={{ color:over?C.crimson:C.jade, fontWeight:800, fontSize:12 }}>{hours.toFixed(0)}u</span>
-                          <div style={{ color:C.inkMuted, fontSize:9 }}>/{s.contract_hours || 20}u</div>
-                          {over && <div style={{ color:C.crimson, fontSize:8 }}>OT</div>}
-                        </td>
-                      </tr>
-                    )
-                  })}
+                          </td>
+                        )
+                      })}
+                    </tr>
+                  ))}
                 </tbody>
               </table>
             </Card>
           </div>
         )
       })}
+
       {!isPublished && <div style={{ color:C.inkMuted, fontSize:11, textAlign:'center' }}>💡 Klik op een cel om een dienst aan te passen</div>}
     </div>
   )
