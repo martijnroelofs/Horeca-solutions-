@@ -769,6 +769,7 @@ export default function AdminApp() {
           <RoosterTab
             allStaff={allStaff} currentSchedule={currentSchedule}
             currentWeek={currentWeek} shiftTemplates={shiftTemplates}
+            templateSlots={templateSlots}
             peakMoments={peakMoments} leaveRequests={leaveRequests}
             availPatterns={availPatterns} availOverrides={availOverrides}
             capacities={capacities} isPublished={isPublished}
@@ -879,7 +880,7 @@ export default function AdminApp() {
 
 // ── Sub-components ────────────────────────────────────────────────────────────
 
-function RoosterTab({ allStaff, currentSchedule, currentWeek, shiftTemplates, peakMoments,
+function RoosterTab({ allStaff, currentSchedule, currentWeek, shiftTemplates, templateSlots, peakMoments,
   leaveRequests, availPatterns, availOverrides, capacities, isPublished,
   weekIdx, weeks, setWeekIdx, onGenerate, generating, onPublish, onDelete, openShifts, rosterGaps, onCellChange }) {
   const [editCell, setEditCell] = useState(null)
