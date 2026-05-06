@@ -1277,10 +1277,14 @@ function TemplateTab({ templateSlots: initialSlots, shiftTemplates, peakMoments,
         <div style={{ display:'flex', gap:8 }}>
           <button onClick={async () => {
             if (!window.confirm('Weet je zeker dat je ALLE slots van dit template wilt verwijderen?')) return
-            await supabase.from('template_slots').delete()
+            const tid = activeTemplateId
+            if (!tid) { show('Geen actief template geselecteerd'); return }
+            const { error } = await supabase.from('template_slots').delete()
               .eq('org_id', orgId)
-              .eq('bezetting_template_id', activeTemplateId)
-            setLocalSlots([])
+              .eq('bezetting_template_id', tid)
+            if (error) { show('Fout: ' + error.message); return }
+            setLocalSlots(ls => ls.filter(s => s.bezetting_template_id !== tid))
+            onReload()
             show('✓ Alle slots verwijderd')
           }} style={{ ...btn(), background:C.crimsonSoft, color:C.crimson,
             border:`1px solid ${C.crimson}44`, padding:'8px 14px', fontSize:13, borderRadius:10 }}>
