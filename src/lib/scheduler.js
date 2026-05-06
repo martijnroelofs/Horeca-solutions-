@@ -115,10 +115,7 @@ export function generateSchedule({
         (s.is_recurring && s.day_of_week === dayOfWeek) ||
         (!s.is_recurring && s.specific_date === date)
       )
-      // On peak days: bump count by 1 per dept
-      if (isPeak) {
-        daySlots = daySlots.map(s => ({ ...s, count: s.count + 1 }))
-      }
+      // On peak days: no count bump, just prioritise by capacity score (handled in sort below)
     }
 
     // Process each dept slot
@@ -182,7 +179,8 @@ export function generateSchedule({
         // Sort based on scheduleMode:
         // 0=min cost (cheapest staff first), 100=max quality (best capacity score first)
         // Also respect pref_min/max_days as soft rules
-        const qualityWeight = (settings.scheduleMode ?? 75) / 100
+        // On peak days: always prioritise by capacity score regardless of scheduleMode
+        const qualityWeight = isPeak ? 1.0 : (settings.scheduleMode ?? 50) / 100
         pool.sort((a, b) => {
           // Soft rule: prefer staff who haven't reached pref_min_days yet
           const aDays = schedule[a.id].filter(Boolean).length
@@ -193,13 +191,12 @@ export function generateSchedule({
           const bNeedsMore = bDays < bPrefMin ? 1 : 0
           if (aNeedsMore !== bNeedsMore) return bNeedsMore - aNeedsMore
 
-          // Quality vs cost balance
+          // On peak days: capacity score is the only factor
           const aScore = capacityScores?.[a.id]?.[dk] ?? 5
           const bScore = capacityScores?.[b.id]?.[dk] ?? 5
           const aCost = a.hourly_rate || 12
           const bCost = b.hourly_rate || 12
 
-          // Quality mode: high score first. Cost mode: low rate first
           const qualityDiff = (bScore - aScore) * qualityWeight
           const costDiff = (aCost - bCost) * (1 - qualityWeight)
           return qualityDiff + costDiff
