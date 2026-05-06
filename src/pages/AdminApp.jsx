@@ -167,11 +167,11 @@ export default function AdminApp() {
     setLoading(true)
     // Load staff first since other functions depend on staff IDs
     await loadStaff()
-    // Load bezetting templates first so we know the active template
-    await loadBezettingTemplates()
-    // Then load everything else in parallel
+    // Load bezetting templates first so we know the active template ID
+    const defaultTemplateId = await loadBezettingTemplates()
+    // Then load everything else in parallel, passing the template ID directly
     await Promise.all([
-      loadShifts(), loadTemplateSlots(), 
+      loadShifts(), loadTemplateSlots(defaultTemplateId), 
       loadPeaks(), loadHolidays(), loadAssignments(),
       loadLeaves(), loadSwaps(), loadAvailability(),
       loadCapacities(), loadSettings(), loadOvertime(), loadOpenShifts(),
@@ -187,11 +187,15 @@ export default function AdminApp() {
     try {
       const { data, error } = await supabase.from('bezetting_templates')
         .select('*').eq('org_id', orgId).order('created_at')
-      if (error) { console.warn('bezetting_templates not ready:', error.message); return }
+      if (error) { console.warn('bezetting_templates not ready:', error.message); return null }
       setBezettingTemplates(data || [])
       const def = (data || []).find(t => t.is_default)
-      if (def) setActiveTemplateId(id => id || def.id)
-    } catch(e) { console.warn('bezetting_templates error:', e) }
+      if (def) {
+        setActiveTemplateId(id => id || def.id)
+        return def.id
+      }
+      return null
+    } catch(e) { console.warn('bezetting_templates error:', e); return null }
   }
 
   async function loadShifts() {
@@ -202,10 +206,12 @@ export default function AdminApp() {
   }
   async function loadTemplateSlots(templateId) {
     const tid = templateId || activeTemplateId
+    console.log('loadTemplateSlots with tid:', tid)
     const query = supabase.from('template_slots').select('*').eq('org_id', orgId)
     const { data } = tid
       ? await query.eq('bezetting_template_id', tid)
       : await query.not('bezetting_template_id', 'is', null)
+    console.log('loaded slots:', data?.length, 'for template:', tid)
     setTemplateSlots(data || [])
   }
   async function loadPeaks() {
