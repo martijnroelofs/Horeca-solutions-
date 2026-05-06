@@ -135,6 +135,16 @@ export function generateSchedule({
         const shiftDuration = shiftHours(shift)
 
         // Find eligible staff
+        if (dk === 'keuken') {
+          const keukenstaf = staff.filter(s => s.depts?.includes('keuken'))
+          keukenstaf.forEach(s => {
+            const patternBits = availabilityPatterns?.[s.id]?.[dayOfWeek] ?? 0
+            const overrideBits = availabilityOverrides?.[s.id]?.[date]
+            const availBits = overrideBits !== undefined ? overrideBits : patternBits
+            const alreadyAssigned = schedule[s.id][di] !== null
+            console.log('KEUKEN CHECK:', s.name, 'day:', di, 'availBits:', availBits, 'alreadyAssigned:', alreadyAssigned, 'schedule:', schedule[s.id][di])
+          })
+        }
         const pool = staff.filter(s => {
           if (!s.is_active) return false
           if (!s.depts?.includes(dk)) return false
