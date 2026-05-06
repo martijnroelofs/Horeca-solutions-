@@ -406,6 +406,7 @@ export default function AdminApp() {
   async function handleGenerate() {
     setGenerating(true)
     try {
+      console.log('templateSlots count:', templateSlots.length, templateSlots.map(s => `${s.day_of_week}/${s.dept}/${s.shift_name}`))
       const result = generateSchedule({
         staff: allStaff,
         shiftTemplates,
