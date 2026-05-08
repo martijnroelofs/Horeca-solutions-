@@ -293,6 +293,33 @@ export default function AdminApp() {
     })
     setCapacities(map)
   }
+  function calcRosterGaps(schedule, slots, dates, staffList) {
+    const gaps = []
+    const claimed = {}
+    const DEPT_ORDER = ['bar', 'wijkloper', 'runner', 'keuken', 'spoelkeuken']
+    DEPT_ORDER.forEach(deptKey => {
+      slots.filter(s => s.dept === deptKey && s.is_recurring).forEach(slot => {
+        const di = slot.day_of_week
+        if (di >= dates.length) return
+        const date = dates[di]
+        const assigned = (staffList || []).filter(s =>
+          s.depts?.includes(deptKey) &&
+          schedule[s.id]?.[di] === slot.shift_name &&
+          !claimed[`${s.id}_${di}`]
+        )
+        assigned.slice(0, slot.count).forEach(s => { claimed[`${s.id}_${di}`] = true })
+        if (assigned.length < slot.count) {
+          gaps.push({
+            date, day: di, dept: slot.dept, shift_name: slot.shift_name,
+            needed: slot.count, assigned: assigned.length,
+            missing: slot.count - assigned.length,
+          })
+        }
+      })
+    })
+    return gaps
+  }
+
   async function loadOpenShifts() {
     const { data } = await supabase.from('open_shifts')
       .select('*, original_staff:staff!original_staff_id(name,color), claimed_by:staff!claimed_by_id(name,color)')
