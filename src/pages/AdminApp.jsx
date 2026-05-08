@@ -1008,13 +1008,21 @@ function RoosterTab({ allStaff, currentSchedule, currentWeek, shiftTemplates, te
             shift,
             days: DAYS.map((_, di) => {
               // Find staff assigned to this dept+shift on this day
-              const assigned = allStaff.filter(s => {
-                if (!s.depts?.includes(dk)) return false
-                if (currentSchedule[s.id]?.[di] !== shiftName) return false
-                // Only show under primary dept - the first dept in DEPT_KEYS that matches
-                const primaryDept = DEPT_KEYS.find(d => s.depts?.includes(d))
-                return primaryDept === dk
-              })
+              // Get all staff with this shift who belong to this dept
+              const candidates = allStaff.filter(s =>
+                s.depts?.includes(dk) &&
+                currentSchedule[s.id]?.[di] === shiftName
+              )
+              // Get template slot count for this dept+shift+day
+              const slotDef = templateSlots.find(s =>
+                s.dept === dk && s.shift_name === shiftName &&
+                s.is_recurring && s.day_of_week === di
+              )
+              const slotCount = slotDef?.count || 1
+              // Sort by capacity score desc, limit to slot count
+              const assigned = candidates
+                .sort((a,b) => (capacities[b.id]?.[dk]||5) - (capacities[a.id]?.[dk]||5))
+                .slice(0, slotCount)
               return assigned
             })
           }
