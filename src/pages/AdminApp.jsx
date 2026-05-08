@@ -527,6 +527,16 @@ export default function AdminApp() {
   const pendingSwaps = swapRequests.filter(s => s.status === 'pending')
   const notifications = pendingLeaves.length + pendingSwaps.length
 
+  // Recalculate gaps whenever the current schedule or template changes
+  useEffect(() => {
+    if (Object.keys(currentSchedule).length > 0 && templateSlots.length > 0) {
+      const gaps = calcRosterGaps(currentSchedule, templateSlots, currentWeek.dates)
+      setRosterGaps(gaps)
+    } else {
+      setRosterGaps([])
+    }
+  }, [currentSchedule, templateSlots, currentWeek.monday])
+
   const fin = useMemo(() => calcFinancials(
     allStaff, currentSchedule, shiftTemplates, currentWeek.dates, holidays
   ), [allStaff, currentSchedule, shiftTemplates, currentWeek.dates, holidays])
@@ -985,50 +995,56 @@ function RoosterTab({ allStaff, currentSchedule, currentWeek, shiftTemplates, te
       )}
 
       {/* Roster by department - slot based view */}
-      {DEPT_KEYS.map(dk => {
-        const dept = DEPTS[dk]
-        // Get unique shifts for this dept from template slots
-        const deptShifts = [...new Set(
-          templateSlots
-            .filter(s => s.dept === dk && s.is_recurring)
-            .sort((a,b) => {
-              const ta = shiftTemplates[a.shift_name]?.start_time || ''
-              const tb = shiftTemplates[b.shift_name]?.start_time || ''
-              return ta.localeCompare(tb)
-            })
-            .map(s => s.shift_name)
-        )]
-        if (!deptShifts.length) return null
+      {(() => {
+        // Pre-compute global assignment: for each day, track which staff are claimed
+        // Process DEPT_KEYS in order so each staff member appears in only one dept
+        const claimed = {} // { 'staffId_di': true }
 
-        // Build slot grid: for each shift, for each day, who is assigned?
-        const slotGrid = deptShifts.map(shiftName => {
-          const shift = shiftTemplates[shiftName]
-          return {
-            shiftName,
-            shift,
-            days: DAYS.map((_, di) => {
-              // Find staff assigned to this dept+shift on this day
-              // Get all staff with this shift who belong to this dept
-              const candidates = allStaff.filter(s =>
-                s.depts?.includes(dk) &&
-                currentSchedule[s.id]?.[di] === shiftName
-              )
-              // Get template slot count for this dept+shift+day
+        const deptGrids = DEPT_KEYS.map(dk => {
+          const dept = DEPTS[dk]
+          const deptShifts = [...new Set(
+            templateSlots
+              .filter(s => s.dept === dk && s.is_recurring)
+              .sort((a,b) => {
+                const ta = shiftTemplates[a.shift_name]?.start_time || ''
+                const tb = shiftTemplates[b.shift_name]?.start_time || ''
+                return ta.localeCompare(tb)
+              })
+              .map(s => s.shift_name)
+          )]
+          if (!deptShifts.length) return null
+
+          const slotGrid = deptShifts.map(shiftName => {
+            const shift = shiftTemplates[shiftName]
+            const days = DAYS.map((_, di) => {
               const slotDef = templateSlots.find(s =>
                 s.dept === dk && s.shift_name === shiftName &&
                 s.is_recurring && s.day_of_week === di
               )
               const slotCount = slotDef?.count || 1
-              // Sort by capacity score desc, limit to slot count
-              const assigned = candidates
+
+              // Find available staff: has this dept, has this shift, not yet claimed today
+              const candidates = allStaff
+                .filter(s =>
+                  s.depts?.includes(dk) &&
+                  currentSchedule[s.id]?.[di] === shiftName &&
+                  !claimed[`${s.id}_${di}`]
+                )
                 .sort((a,b) => (capacities[b.id]?.[dk]||5) - (capacities[a.id]?.[dk]||5))
                 .slice(0, slotCount)
-              return assigned
-            })
-          }
-        })
 
-        return (
+              // Mark these staff as claimed for this day
+              candidates.forEach(s => { claimed[`${s.id}_${di}`] = true })
+
+              return candidates
+            })
+            return { shiftName, shift, days }
+          })
+
+          return { dk, dept, deptShifts, slotGrid }
+        }).filter(Boolean)
+
+        return deptGrids.map(({ dk, dept, slotGrid }) => (
           <div key={dk}>
             <div style={{ display:'flex', alignItems:'center', gap:10, padding:'10px 14px',
               background:dept.color+'12', border:`1px solid ${dept.color}33`,
@@ -1064,17 +1080,17 @@ function RoosterTab({ allStaff, currentSchedule, currentWeek, shiftTemplates, te
                           <td key={di} style={{ padding:'0 3px', verticalAlign:'top' }}>
                             <div style={{ minHeight:36, padding:'3px', borderRadius:7,
                               background:peak ? dept.color+'10' : 'transparent',
-                              border:`1px solid ${staffList.length ? dept.color+'33' : '#EEE9E0'}` }}>
+                              border:`1px solid ${staffList.length ? dept.color+'33' : staffList.length === 0 ? C.crimson+'33' : '#EEE9E0'}` }}>
                               {staffList.length === 0 && openHere && (
                                 <div style={{ fontSize:9, color:C.amber, fontWeight:700, textAlign:'center', paddingTop:4 }}>🔓 Open</div>
                               )}
                               {staffList.length === 0 && !openHere && (
-                                <div style={{ fontSize:9, color:C.borderLight, textAlign:'center', paddingTop:4 }}>—</div>
+                                <div style={{ fontSize:9, color:C.crimson, fontWeight:700, textAlign:'center', paddingTop:4 }}>⚠ Leeg</div>
                               )}
                               {staffList.map(s => (
-                                <div key={s.id} onClick={() => !isPublished && setEditCell({ sid:s.id, day:di })}
+                                <div key={s.id}
                                   style={{ display:'flex', alignItems:'center', gap:4, padding:'2px 4px',
-                                    borderRadius:5, marginBottom:2, cursor:isPublished?'default':'pointer',
+                                    borderRadius:5, marginBottom:2,
                                     background:s.color+'18' }}>
                                   <div style={{ width:6, height:6, borderRadius:99, background:s.color, flexShrink:0 }}/>
                                   <span style={{ fontSize:10, fontWeight:700, color:C.ink, whiteSpace:'nowrap' }}>
@@ -1092,13 +1108,10 @@ function RoosterTab({ allStaff, currentSchedule, currentWeek, shiftTemplates, te
               </table>
             </Card>
           </div>
-        )
-      })}
-
+        ))
+      })()}
       {!isPublished && <div style={{ color:C.inkMuted, fontSize:11, textAlign:'center' }}>💡 Klik op een cel om een dienst aan te passen</div>}
-    </div>
-  )
-}
+
 
 function parseTime(t) {
   if (!t) return 0
