@@ -1008,10 +1008,13 @@ function RoosterTab({ allStaff, currentSchedule, currentWeek, shiftTemplates, te
             shift,
             days: DAYS.map((_, di) => {
               // Find staff assigned to this dept+shift on this day
-              const assigned = allStaff.filter(s =>
-                s.depts?.includes(dk) &&
-                currentSchedule[s.id]?.[di] === shiftName
-              )
+              const assigned = allStaff.filter(s => {
+                if (!s.depts?.includes(dk)) return false
+                if (currentSchedule[s.id]?.[di] !== shiftName) return false
+                // Only show under primary dept - the first dept in DEPT_KEYS that matches
+                const primaryDept = DEPT_KEYS.find(d => s.depts?.includes(d))
+                return primaryDept === dk
+              })
               return assigned
             })
           }
