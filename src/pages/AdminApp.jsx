@@ -1111,7 +1111,9 @@ function RoosterTab({ allStaff, currentSchedule, currentWeek, shiftTemplates, te
         ))
       })()}
       {!isPublished && <div style={{ color:C.inkMuted, fontSize:11, textAlign:'center' }}>💡 Klik op een cel om een dienst aan te passen</div>}
-
+    </div>
+  )
+}
 
 function parseTime(t) {
   if (!t) return 0
