@@ -1633,17 +1633,10 @@ function PersoneelTab({ allStaff, capacities, orgId, onReload, show, shiftTempla
         onReload()
         return // early return to skip the modal close below
       } else {
-        // Create auth user via signUp
-        const { data: authData, error: authErr } = await supabase.auth.signUp({
-          email: form.email,
-          password: form.password || Math.random().toString(36).slice(-8),
-          options: { data: { name: form.name } }
-        })
-        if (authErr && !authErr.message.includes('already registered')) throw authErr
-        // Get auth_id — either new or existing user
-        const authId = authData?.user?.id || null
+        // Create staff record only — auth account is created when employee logs in for the first time
+        // Do NOT use signUp here as it would log out the current admin session
         await supabase.from('staff').insert({
-          org_id: orgId, auth_id: authId,
+          org_id: orgId, auth_id: null,
           name:form.name, email:form.email, role:form.role, color:form.color,
           contract_type:form.contract_type, contract_hours:form.contract_hours,
           min_hours:form.min_hours, max_hours:form.max_hours,
