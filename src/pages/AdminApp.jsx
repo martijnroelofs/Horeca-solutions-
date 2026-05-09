@@ -180,7 +180,7 @@ export default function AdminApp() {
   }
 
   async function loadStaff() {
-    const { data } = await supabase.from('staff').select('*').eq('org_id', orgId).eq('is_active', true)
+    const { data } = await supabase.from('staff').select('*').eq('org_id', orgId).order('is_active', { ascending: false }).order('name')
     setAllStaff(data || [])
   }
   async function loadBezettingTemplates() {
@@ -1672,7 +1672,8 @@ function PersoneelTab({ allStaff, capacities, orgId, onReload, show, shiftTempla
         </Card>
       )}
 
-      {allStaff.map(s => {
+      {/* Active staff */}
+      {allStaff.filter(s => s.is_active).map(s => {
         const hrs = (currentSchedule[s.id] || []).reduce((a, sh) => {
           if (!sh || !shiftTemplates[sh]) return a
           const t = shiftTemplates[sh]
@@ -1726,6 +1727,18 @@ function PersoneelTab({ allStaff, capacities, orgId, onReload, show, shiftTempla
                     style={{ ...btn(), flex:1, background:s.is_active?C.crimsonSoft:C.jadeSoft, color:s.is_active?C.crimson:C.jade, padding:'7px', fontSize:12, borderRadius:9 }}>
                     {s.is_active ? 'Deactiveren' : 'Activeren'}
                   </button>
+                  {!s.is_active && (
+                    <button onClick={async () => {
+                      if (!window.confirm(`Weet je zeker dat je ${s.name} permanent wilt verwijderen? Dit kan niet ongedaan worden gemaakt.`)) return
+                      await supabase.from('availability_patterns').delete().eq('staff_id', s.id)
+                      await supabase.from('capacity_scores').delete().eq('staff_id', s.id)
+                      await supabase.from('staff').delete().eq('id', s.id)
+                      onReload()
+                      show(`✓ ${s.name} verwijderd`)
+                    }} style={{ ...btn(), flex:1, background:C.crimson, color:C.white, padding:'7px', fontSize:12, borderRadius:9 }}>
+                      🗑 Verwijderen
+                    </button>
+                  )}
                 </div>
 
                 {capId === s.id && (
@@ -2157,6 +2170,49 @@ function ZiekteTab({ allStaff, currentSchedule, currentWeek, shiftTemplates, org
             </div>
             <button onClick={() => setClaimModal(null)} style={{ ...btn(), width:'100%', background:'#EBE7DE', color:C.inkMid, padding:'12px', borderRadius:12 }}>Annuleren</button>
           </div>
+        </div>
+      )}
+
+      {/* Gedeactiveerd personeel */}
+      {allStaff.filter(s => !s.is_active).length > 0 && (
+        <div style={{ marginTop:8 }}>
+          <div style={{ fontSize:12, fontWeight:700, color:C.inkMuted, marginBottom:8, paddingTop:8,
+            borderTop:`1px solid ${C.border}` }}>
+            Gedeactiveerd personeel ({allStaff.filter(s => !s.is_active).length})
+          </div>
+          {allStaff.filter(s => !s.is_active).map(s => (
+            <Card key={s.id} style={{ padding:'12px 14px', marginBottom:6, opacity:0.6,
+              border:`1px solid ${C.border}` }}>
+              <div style={{ display:'flex', alignItems:'center', gap:10, justifyContent:'space-between' }}>
+                <div style={{ display:'flex', alignItems:'center', gap:10 }}>
+                  <div style={{ width:32, height:32, borderRadius:99, background:s.color+'33',
+                    display:'flex', alignItems:'center', justifyContent:'center',
+                    fontSize:13, fontWeight:700, color:s.color }}>
+                    {s.name?.split(' ').map(w=>w[0]).join('').slice(0,2).toUpperCase()}
+                  </div>
+                  <div>
+                    <div style={{ fontWeight:700, fontSize:13, color:C.inkMuted }}>{s.name}</div>
+                    <div style={{ fontSize:11, color:C.inkMuted }}>{s.email}</div>
+                  </div>
+                </div>
+                <div style={{ display:'flex', gap:6 }}>
+                  <button onClick={async () => {
+                    await supabase.from('staff').update({ is_active:true }).eq('id', s.id)
+                    onReload(); show(`✓ ${s.name} geactiveerd`)
+                  }} style={{ ...btn(), background:C.jadeSoft, color:C.jade,
+                    padding:'6px 12px', fontSize:12, borderRadius:8 }}>Activeren</button>
+                  <button onClick={async () => {
+                    if (!window.confirm(`${s.name} permanent verwijderen?`)) return
+                    await supabase.from('availability_patterns').delete().eq('staff_id', s.id)
+                    await supabase.from('capacity_scores').delete().eq('staff_id', s.id)
+                    await supabase.from('staff').delete().eq('id', s.id)
+                    onReload(); show(`✓ ${s.name} verwijderd`)
+                  }} style={{ ...btn(), background:C.crimson, color:C.white,
+                    padding:'6px 12px', fontSize:12, borderRadius:8 }}>🗑 Verwijderen</button>
+                </div>
+              </div>
+            </Card>
+          ))}
         </div>
       )}
     </div>
