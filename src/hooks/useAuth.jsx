@@ -25,11 +25,31 @@ export function AuthProvider({ children }) {
   }, [])
 
   async function loadStaff(authId) {
-    const { data } = await supabase
+    // First try to find by auth_id
+    let { data } = await supabase
       .from('staff')
       .select('*')
       .eq('auth_id', authId)
       .single()
+
+    // If not found, try to link by email (for staff created without auth account)
+    if (!data) {
+      const { data: { user } } = await supabase.auth.getUser()
+      if (user?.email) {
+        const { data: staffByEmail } = await supabase
+          .from('staff')
+          .select('*')
+          .eq('email', user.email)
+          .is('auth_id', null)
+          .single()
+        if (staffByEmail) {
+          // Link auth_id to this staff record
+          await supabase.from('staff').update({ auth_id: authId }).eq('id', staffByEmail.id)
+          data = { ...staffByEmail, auth_id: authId }
+        }
+      }
+    }
+
     setStaff(data)
     setLoading(false)
   }
@@ -52,4 +72,3 @@ export function AuthProvider({ children }) {
 }
 
 export const useAuth = () => useContext(AuthContext)
-
