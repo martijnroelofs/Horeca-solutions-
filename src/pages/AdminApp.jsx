@@ -2174,13 +2174,16 @@ function ZiekteTab({ allStaff, currentSchedule, currentWeek, shiftTemplates, org
       )}
 
       {/* Gedeactiveerd personeel */}
-      {allStaff.filter(s => !s.is_active).length > 0 && (
+      {(() => {
+        const deactStaff = allStaff.filter(s => s.is_active === false || s.is_active === 'false' || s.is_active === 0)
+        if (!deactStaff.length) return null
+        return (
         <div style={{ marginTop:8 }}>
           <div style={{ fontSize:12, fontWeight:700, color:C.inkMuted, marginBottom:8, paddingTop:8,
             borderTop:`1px solid ${C.border}` }}>
-            Gedeactiveerd personeel ({allStaff.filter(s => !s.is_active).length})
+            Gedeactiveerd personeel ({deactStaff.length})
           </div>
-          {allStaff.filter(s => !s.is_active).map(s => (
+          {deactStaff.map(s => (
             <Card key={s.id} style={{ padding:'12px 14px', marginBottom:6, opacity:0.6,
               border:`1px solid ${C.border}` }}>
               <div style={{ display:'flex', alignItems:'center', gap:10, justifyContent:'space-between' }}>
@@ -2214,7 +2217,8 @@ function ZiekteTab({ allStaff, currentSchedule, currentWeek, shiftTemplates, org
             </Card>
           ))}
         </div>
-      )}
+        )
+      })()}
     </div>
   )
 }
