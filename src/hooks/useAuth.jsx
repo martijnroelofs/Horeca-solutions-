@@ -11,46 +11,59 @@ export function AuthProvider({ children }) {
   useEffect(() => {
     supabase.auth.getSession().then(({ data: { session } }) => {
       setSession(session)
-      if (session) loadStaff(session.user.id)
+      if (session) loadStaff(session.user)
       else setLoading(false)
     })
 
     const { data: { subscription } } = supabase.auth.onAuthStateChange((_event, session) => {
       setSession(session)
-      if (session) loadStaff(session.user.id)
-      else { setStaff(null); setLoading(false) }
+      if (session) {
+        setLoading(true)
+        loadStaff(session.user)
+      } else {
+        setStaff(null)
+        setLoading(false)
+      }
     })
 
     return () => subscription.unsubscribe()
   }, [])
 
-  async function loadStaff(authId) {
-    // First try to find by auth_id
-    let { data } = await supabase
+  async function loadStaff(user) {
+    if (!user) { setStaff(null); setLoading(false); return }
+
+    // Try to find by auth_id first
+    const { data: byAuthId } = await supabase
       .from('staff')
       .select('*')
-      .eq('auth_id', authId)
-      .single()
+      .eq('auth_id', user.id)
+      .eq('is_active', true)
+      .maybeSingle()
 
-    // If not found, try to link by email (for staff created without auth account)
-    if (!data) {
-      const { data: { user } } = await supabase.auth.getUser()
-      if (user?.email) {
-        const { data: staffByEmail } = await supabase
-          .from('staff')
-          .select('*')
-          .eq('email', user.email)
-          .is('auth_id', null)
-          .single()
-        if (staffByEmail) {
-          // Link auth_id to this staff record
-          await supabase.from('staff').update({ auth_id: authId }).eq('id', staffByEmail.id)
-          data = { ...staffByEmail, auth_id: authId }
-        }
-      }
+    if (byAuthId) {
+      setStaff(byAuthId)
+      setLoading(false)
+      return
     }
 
-    setStaff(data)
+    // Try to link by email (staff created before they logged in)
+    const { data: byEmail } = await supabase
+      .from('staff')
+      .select('*')
+      .eq('email', user.email)
+      .is('auth_id', null)
+      .eq('is_active', true)
+      .maybeSingle()
+
+    if (byEmail) {
+      await supabase.from('staff').update({ auth_id: user.id }).eq('id', byEmail.id)
+      setStaff({ ...byEmail, auth_id: user.id })
+      setLoading(false)
+      return
+    }
+
+    // No staff record found
+    setStaff(null)
     setLoading(false)
   }
 
@@ -60,8 +73,9 @@ export function AuthProvider({ children }) {
   }
 
   async function signOut() {
-    await supabase.auth.signOut()
     setStaff(null)
+    setLoading(false)
+    await supabase.auth.signOut()
   }
 
   return (
