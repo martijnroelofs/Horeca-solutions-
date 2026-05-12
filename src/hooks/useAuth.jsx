@@ -68,18 +68,22 @@ export function AuthProvider({ children }) {
   }
 
   async function signIn(email, password) {
-    const { error } = await supabase.auth.signInWithPassword({ email, password })
+    const { data, error } = await supabase.auth.signInWithPassword({ email, password })
+    if (!error && data?.user) {
+      // Force fresh load to prevent stale session state
+      await loadStaff(data.user)
+    }
     return { error }
   }
 
   async function signOut() {
     setStaff(null)
     setLoading(false)
-    await supabase.auth.signOut({ scope: 'local' })
-    // Clear all local storage to prevent session caching issues
-    localStorage.clear()
-    sessionStorage.clear()
-    window.location.href = '/'
+    // Clear Supabase session storage keys
+    Object.keys(localStorage).forEach(key => {
+      if (key.startsWith('sb-') || key.includes('supabase')) localStorage.removeItem(key)
+    })
+    await supabase.auth.signOut()
   }
 
   return (
