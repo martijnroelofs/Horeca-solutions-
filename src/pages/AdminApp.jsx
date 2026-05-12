@@ -1,7 +1,2485 @@
 import { useState, useEffect, useMemo, useCallback, useRef } from 'react'
 import { useAuth } from '../hooks/useAuth'
 import { supabase } from '../lib/supabase'
+import { generateSchedule, calcFinancimport { useState, useEffect, useMemo, useCallback, useRef } from 'react'
+import { useAuth } from '../hooks/useAuth'
+import { supabase } from '../lib/supabase'
 import { generateSchedule, calcFinancials } from '../lib/scheduler'
+import {
+  C, DEPTS, CONTRACT_TYPES, Badge, Card, Avatar, Toast, WeekNav,
+  Input, Select, btn, getWeekDates, getMondayOfWeek, formatDate,
+  DAYS, DAYS_FULL,
+} from '../components/ui'
+
+const DEPT_KEYS = Object.keys(DEPTS)
+
+function getWeeks() {
+  const weeks = []
+  const now = new Date()
+  // Get current UTC date parts to avoid any timezone issues
+  const y = now.getUTCFullYear()
+  const m = now.getUTCMonth() + 1 // 1-12
+  // Start from first monday of previous month
+  const startStr = getMondayOfWeek(new Date(Date.UTC(y, m - 2, 1)))
+  const [sy, sm, sd] = startStr.split('-').map(Number)
+  for (let i = 0; i < 20; i++) {
+    // Pure UTC date arithmetic
+    const monDate = new Date(Date.UTC(sy, sm - 1, sd + i * 7))
+    const sunDate = new Date(Date.UTC(sy, sm - 1, sd + i * 7 + 6))
+    const monStr = monDate.toISOString().slice(0, 10)
+    const sunStr = sunDate.toISOString().slice(0, 10)
+    weeks.push({
+      monday: monStr,
+      label: `${formatDate(monStr)} – ${formatDate(sunStr)}`,
+      dates: getWeekDates(monStr)
+    })
+  }
+  return weeks
+}
+
+export default function AdminApp() {
+  const { staff: me, signOut } = useAuth()
+  const [tab, setTab] = useState('dashboard')
+  const [weekIdx, setWeekIdx] = useState(() => {
+    // Default to current week
+    const now = new Date()
+    const todayStr = now.toISOString().split('T')[0]
+    const weeks = getWeeks()
+    const idx = weeks.findIndex(w => w.monday <= todayStr && w.dates[6] >= todayStr)
+    return idx >= 0 ? idx : 4
+  })
+  const [toast, setToast] = useState(null)
+  const [loading, setLoading] = useState(true)
+
+  // Data state
+  const [allStaff, setAllStaff] = useState([])
+  const [shiftTemplates, setShiftTemplates] = useState({})
+  const [templateSlots, setTemplateSlots] = useState([])
+  const [bezettingTemplates, setBezettingTemplates] = useState([])
+  const [activeTemplateId, setActiveTemplateId] = useState(null)
+  const [peakMoments, setPeakMoments] = useState([])
+  const [holidays, setHolidays] = useState([])
+  const [rosters, setRosters] = useState({}) // { weekMonday: roster }
+  const [assignments, setAssignments] = useState({}) // { weekMonday: { staffId: [shift×7] } }
+  const [leaveRequests, setLeaveRequests] = useState([])
+  const [swapRequests, setSwapRequests] = useState([])
+  const [availPatterns, setAvailPatterns] = useState({})
+  const [availOverrides, setAvailOverrides] = useState({})
+  const [capacities, setCapacities] = useState({})
+  const [overtimeLog, setOvertimeLog] = useState({})
+  const [settings, setSettings] = useState({})
+  const [generating, setGenerating] = useState(false)
+  const [openShifts, setOpenShifts] = useState([])
+  const [rosterGaps, setRosterGaps] = useState([]) // unfilled template slots
+  const [recurringPeaks, setRecurringPeaks] = useState({ 4:4, 5:7, 6:2 })
+  const [scheduleMode, setScheduleMode] = useState(50) // 0=min cost, 100=max quality // Fri eve, Sat all, Sun midday
+
+  const weeks = useMemo(() => getWeeks(), [])
+  const currentWeek = weeks[weekIdx]
+  const orgId = me?.org_id
+
+  const show = msg => { setToast(msg); setTimeout(() => setToast(null), 3000) }
+
+  // ── Email reminder via Resend ───────────────────────────────────────────────
+  async function sendReminderEmails() {
+    if (!settings.resend_api_key) { show('Stel eerst de Resend API key in bij Instellingen'); return }
+    const appUrl = window.location.origin
+    const staffWithoutAvail = allStaff.filter(s => {
+      if (!s.is_active || !s.email) return false
+      const pat = availPatterns[s.id] || {}
+      return Object.keys(pat).length === 0
+    })
+    if (!staffWithoutAvail.length) { show('Alle medewerkers hebben beschikbaarheid ingevuld'); return }
+    show(`📧 Versturen naar ${staffWithoutAvail.length} medewerker(s)...`)
+    let ok = 0, fail = 0
+    for (const s of staffWithoutAvail) {
+      const html = `
+        <div style="font-family:sans-serif;max-width:500px;margin:0 auto;padding:20px">
+          <div style="background:#1A2340;padding:20px;border-radius:12px;text-align:center;margin-bottom:20px">
+            <span style="font-size:32px">🍽</span>
+            <h1 style="color:#C4882A;margin:8px 0 4px;font-size:22px">RoosterAI</h1>
+          </div>
+          <p style="color:#1A2340;font-size:16px">Beste ${s.name.split(' ')[0]},</p>
+          <p style="color:#3D4460">Je beschikbaarheid voor de komende maand is nog niet ingevuld in RoosterAI.</p>
+          <p style="color:#3D4460">Log in en ga naar het tabblad <strong>Beschikbaar</strong> om je beschikbaarheid in te stellen.</p>
+          <div style="text-align:center;margin:24px 0">
+            <a href="${appUrl}" style="background:#1A5CB4;color:white;padding:12px 28px;border-radius:10px;text-decoration:none;font-weight:700;font-size:15px">
+              Naar RoosterAI →
+            </a>
+          </div>
+          <p style="color:#8A90A8;font-size:13px"><strong>Deadline:</strong> de 14e van de maand.</p>
+          <p style="color:#8A90A8;font-size:13px">Met vriendelijke groet,<br/>Het management</p>
+        </div>
+      `
+      try {
+        const { data, error } = await supabase.functions.invoke('send-email', {
+          body: {
+            to: s.email,
+            subject: 'Vergeet niet je beschikbaarheid in te vullen!',
+            html,
+            apiKey: settings.resend_api_key,
+            from: settings.sender_email || 'rooster@jouwrestaurant.nl',
+          }
+        })
+        if (!error && data?.id) ok++; else fail++
+        await supabase.from('email_log').insert({
+          org_id: orgId, to_email: s.email,
+          subject: 'Vergeet niet je beschikbaarheid in te vullen!',
+          status: data.id ? 'sent' : 'failed'
+        })
+      } catch (e) { fail++ }
+    }
+    show(fail > 0 ? `✓ ${ok} verstuurd · ${fail} mislukt` : `✓ ${ok} herinneringen verstuurd!`)
+  }
+
+  // ── Load all data ─────────────────────────────────────────────────────────
+  // Reload template slots when active template changes
+  useEffect(() => {
+    if (activeTemplateId) loadTemplateSlots(activeTemplateId)
+  }, [activeTemplateId])
+
+  useEffect(() => {
+    if (!orgId) return
+    loadAll()
+
+    // Auto-generate check on the 15th
+    const now = new Date()
+    if (now.getDate() === 15) {
+      const nextMonth = new Date(now.getFullYear(), now.getMonth() + 1, 1)
+      const nextMonthStr = nextMonth.toISOString().split('T')[0].slice(0, 7)
+      const storageKey = `autoGenerated_${orgId}_${nextMonthStr}`
+      if (!localStorage.getItem(storageKey)) {
+        localStorage.setItem(storageKey, 'true')
+        // Delay to ensure data is loaded first
+        setTimeout(() => handleGenerateMonth(), 3000)
+        show(`🗓 Automatisch rooster genereren voor ${nextMonth.toLocaleDateString('nl-NL', {month:'long', year:'numeric'})}...`)
+      }
+    }
+
+    // Realtime subscription
+    const sub = supabase.channel(`admin_${orgId}`)
+      .on('postgres_changes', { event: '*', schema: 'public', table: 'roster_assignments' }, loadAssignments)
+      .on('postgres_changes', { event: '*', schema: 'public', table: 'leave_requests' }, loadLeaves)
+      .on('postgres_changes', { event: '*', schema: 'public', table: 'swap_requests' }, loadSwaps)
+      .subscribe()
+
+    return () => supabase.removeChannel(sub)
+  }, [orgId])
+
+  async function loadAll() {
+    setLoading(true)
+    // Load staff first since other functions depend on staff IDs
+    await loadStaff()
+    // Load bezetting templates first so we know the active template ID
+    const defaultTemplateId = await loadBezettingTemplates()
+    // Then load everything else in parallel, passing the template ID directly
+    await Promise.all([
+      loadShifts(), loadTemplateSlots(defaultTemplateId), 
+      loadPeaks(), loadHolidays(), loadAssignments(),
+      loadLeaves(), loadSwaps(), loadAvailability(),
+      loadCapacities(), loadSettings(), loadOvertime(), loadOpenShifts(),
+    ])
+    setLoading(false)
+  }
+
+  async function loadStaff() {
+    const { data } = await supabase.from('staff').select('*').eq('org_id', orgId).order('is_active', { ascending: false }).order('name')
+    setAllStaff(data || [])
+  }
+  async function loadBezettingTemplates() {
+    try {
+      const { data, error } = await supabase.from('bezetting_templates')
+        .select('*').eq('org_id', orgId).order('created_at')
+      if (error) { console.warn('bezetting_templates not ready:', error.message); return null }
+      setBezettingTemplates(data || [])
+      const def = (data || []).find(t => t.is_default)
+      if (def) {
+        setActiveTemplateId(id => id || def.id)
+        return def.id
+      }
+      return null
+    } catch(e) { console.warn('bezetting_templates error:', e); return null }
+  }
+
+  async function loadShifts() {
+    const { data } = await supabase.from('shift_templates').select('*').eq('org_id', orgId)
+    const map = {}
+    ;(data || []).forEach(s => { map[s.name] = s })
+    setShiftTemplates(map)
+  }
+  async function loadTemplateSlots(templateId) {
+    const tid = templateId || activeTemplateId
+    console.log('loadTemplateSlots with tid:', tid)
+    const query = supabase.from('template_slots').select('*').eq('org_id', orgId)
+    const { data } = tid
+      ? await query.eq('bezetting_template_id', tid)
+      : await query.not('bezetting_template_id', 'is', null)
+    console.log('loaded slots:', data?.length, 'for template:', tid)
+    setTemplateSlots(data || [])
+  }
+  async function loadPeaks() {
+    const { data } = await supabase.from('peak_moments').select('*').eq('org_id', orgId)
+    setPeakMoments(data || [])
+  }
+  async function loadHolidays() {
+    const { data } = await supabase.from('public_holidays').select('*, holiday_slots(*)').eq('org_id', orgId)
+    setHolidays(data || [])
+  }
+  async function loadAssignments() {
+    const { data: ros } = await supabase.from('rosters').select('*').eq('org_id', orgId)
+    const rMap = {}
+    ;(ros || []).forEach(r => { rMap[r.week_start] = r })
+    setRosters(rMap)
+
+    if (!ros?.length) return
+    const rIds = ros.map(r => r.id)
+    const { data: asgn } = await supabase.from('roster_assignments').select('*').in('roster_id', rIds)
+
+    const byWeek = {}
+    ;(asgn || []).forEach(a => {
+      const roster = ros.find(r => r.id === a.roster_id)
+      if (!roster) return
+      const wk = roster.week_start
+      if (!byWeek[wk]) byWeek[wk] = {}
+      if (!byWeek[wk][a.staff_id]) byWeek[wk][a.staff_id] = Array(7).fill(null)
+      const di = getWeekDates(wk).indexOf(a.date)
+      if (di >= 0) byWeek[wk][a.staff_id][di] = a.shift_name
+    })
+    setAssignments(byWeek)
+  }
+  async function loadLeaves() {
+    const { data } = await supabase.from('leave_requests')
+      .select('*, staff:staff_id(name,color)')
+      .in('staff_id', allStaff.length ? allStaff.map(s => s.id) : ['00000000-0000-0000-0000-000000000000'])
+      .order('created_at', { ascending: false })
+    setLeaveRequests(data || [])
+  }
+  async function loadSwaps() {
+    const { data } = await supabase.from('swap_requests')
+      .select('*, from_staff:staff!from_staff_id(name,color), to_staff:staff!to_staff_id(name,color)')
+      .in('from_staff_id', allStaff.length ? allStaff.map(s => s.id) : ['00000000-0000-0000-0000-000000000000'])
+      .order('created_at', { ascending: false })
+    setSwapRequests(data || [])
+  }
+  async function loadAvailability() {
+    // Get all staff IDs for this org directly
+    const { data: staffIds } = await supabase.from('staff')
+      .select('id').eq('org_id', orgId).eq('is_active', true)
+    const ids = (staffIds || []).map(s => s.id)
+    if (!ids.length) return
+    const { data: pats } = await supabase.from('availability_patterns')
+      .select('*').in('staff_id', ids)
+    const { data: ovs } = await supabase.from('availability_overrides')
+      .select('*').in('staff_id', ids)
+    const patMap = {}
+    ;(pats || []).forEach(p => {
+      if (!patMap[p.staff_id]) patMap[p.staff_id] = {}
+      patMap[p.staff_id][p.day_of_week] = p.slots
+    })
+    const ovMap = {}
+    ;(ovs || []).forEach(o => {
+      if (!ovMap[o.staff_id]) ovMap[o.staff_id] = {}
+      ovMap[o.staff_id][o.date] = o.slots
+    })
+    setAvailPatterns(patMap)
+    setAvailOverrides(ovMap)
+  }
+  async function loadCapacities() {
+    const { data: staffIds } = await supabase.from('staff')
+      .select('id').eq('org_id', orgId).eq('is_active', true)
+    const ids = (staffIds || []).map(s => s.id)
+    if (!ids.length) return
+    const { data } = await supabase.from('capacity_scores')
+      .select('*').in('staff_id', ids)
+    const map = {}
+    ;(data || []).forEach(c => {
+      if (!map[c.staff_id]) map[c.staff_id] = {}
+      map[c.staff_id][c.dept] = c.score
+    })
+    setCapacities(map)
+  }
+  function calcRosterGaps(schedule, slots, dates, staffList) {
+    const gaps = []
+    const claimed = {}
+    const DEPT_ORDER = ['bar', 'wijkloper', 'runner', 'keuken', 'spoelkeuken']
+    DEPT_ORDER.forEach(deptKey => {
+      slots.filter(s => s.dept === deptKey && s.is_recurring).forEach(slot => {
+        const di = slot.day_of_week
+        if (di >= dates.length) return
+        const date = dates[di]
+        const assigned = (staffList || []).filter(s =>
+          s.depts?.includes(deptKey) &&
+          schedule[s.id]?.[di] === slot.shift_name &&
+          !claimed[`${s.id}_${di}`]
+        )
+        assigned.slice(0, slot.count).forEach(s => { claimed[`${s.id}_${di}`] = true })
+        if (assigned.length < slot.count) {
+          gaps.push({
+            date, day: di, dept: slot.dept, shift_name: slot.shift_name,
+            needed: slot.count, assigned: assigned.length,
+            missing: slot.count - assigned.length,
+          })
+        }
+      })
+    })
+    return gaps
+  }
+
+  async function loadOpenShifts() {
+    const { data } = await supabase.from('open_shifts')
+      .select('*, original_staff:staff!original_staff_id(name,color), claimed_by:staff!claimed_by_id(name,color)')
+      .eq('org_id', orgId)
+      .eq('status', 'open')
+      .order('date')
+    setOpenShifts(data || [])
+  }
+
+  async function loadSettings() {
+    const { data } = await supabase.from('org_settings').select('*').eq('org_id', orgId).single()
+    setSettings(data || {})
+  }
+  async function loadOvertime() {
+    const { data } = await supabase.from('overtime_log').select('*')
+      .in('staff_id', allStaff.length ? allStaff.map(s => s.id) : ['none'])
+    const map = {}
+    ;(data || []).forEach(o => { map[o.staff_id] = (map[o.staff_id] || 0) + (o.overtime_hours - o.compensated_hours) })
+    setOvertimeLog(map)
+  }
+
+  // ── Generate full month ────────────────────────────────────────────────────
+  async function handleGenerateMonth() {
+    const now = new Date()
+    // Always generate for next month
+    const nextMonth = new Date(now.getFullYear(), now.getMonth() + 1, 1)
+    const nextMonthStr = nextMonth.toISOString().split('T')[0].slice(0, 7) // YYYY-MM
+    const monthWeeks = weeks.filter(w => w.monday.startsWith(nextMonthStr))
+    if (!monthWeeks.length) { show('Geen weken gevonden voor volgende maand'); return }
+
+    setGenerating(true)
+    show(`🪄 Genereer rooster voor ${nextMonth.toLocaleDateString('nl-NL', { month:'long', year:'numeric' })}...`)
+
+    for (const week of monthWeeks) {
+      const result = generateSchedule({
+        staff: allStaff,
+        shiftTemplates,
+        templateSlots,
+        peakMoments,
+        recurringPeaks,
+        holidays,
+        availabilityPatterns: availPatterns,
+        availabilityOverrides: availOverrides,
+        leaveRequests,
+        capacityScores: capacities,
+        weekDates: week.dates,
+        settings: { ...settings, scheduleMode },
+        otHistory: overtimeLog,
+      })
+
+      const { data: roster } = await supabase.from('rosters').upsert({
+        org_id: orgId, week_start: week.monday, status: 'concept',
+      }, { onConflict: 'org_id,week_start' }).select().single()
+
+      await supabase.from('roster_assignments').delete().eq('roster_id', roster.id)
+
+      const weekMap = {}
+      Object.entries(result.schedule).forEach(([staffId, shifts]) => {
+        shifts.forEach((shiftName, di) => {
+          if (!shiftName) return
+          const key = `${staffId}_${week.dates[di]}`
+          weekMap[key] = { roster_id: roster.id, staff_id: staffId, date: week.dates[di], shift_name: shiftName }
+        })
+      })
+      const toInsert = Object.values(weekMap)
+      if (toInsert.length) await supabase.from('roster_assignments').insert(toInsert)
+    }
+
+    await loadAssignments()
+    setGenerating(false)
+    show(`✓ Rooster gegenereerd voor ${monthWeeks.length} weken in ${nextMonth.toLocaleDateString('nl-NL', { month:'long' })}!`)
+  }
+
+  // ── Delete roster ──────────────────────────────────────────────────────────
+  async function handleDeleteRoster() {
+    const roster = rosters[currentWeek.monday]
+    if (!roster) { show('Geen rooster om te verwijderen'); return }
+    if (roster.status === 'published') {
+      show('Gepubliceerd rooster kan niet verwijderd worden — trek publicatie eerst in')
+      return
+    }
+    await supabase.from('roster_assignments').delete().eq('roster_id', roster.id)
+    await supabase.from('rosters').delete().eq('id', roster.id)
+    await loadAssignments()
+    show('✓ Rooster verwijderd — je kunt nu opnieuw genereren')
+  }
+
+  // ── Generate schedule ────────────────────────────────────────────────────
+  async function handleGenerate() {
+    setGenerating(true)
+    try {
+      console.log('templateSlots count:', templateSlots.length, templateSlots.map(s => `${s.day_of_week}/${s.dept}/${s.shift_name}`))
+      const result = generateSchedule({
+        staff: allStaff,
+        shiftTemplates,
+        templateSlots,
+        peakMoments,
+        recurringPeaks,
+        holidays,
+        availabilityPatterns: availPatterns,
+        availabilityOverrides: availOverrides,
+        leaveRequests,
+        capacityScores: capacities,
+        weekDates: currentWeek.dates,
+        settings: { ...settings, scheduleMode },
+        otHistory: overtimeLog,
+      })
+
+      // Upsert roster
+      const { data: roster } = await supabase.from('rosters').upsert({
+        org_id: orgId, week_start: currentWeek.monday, status: 'concept',
+      }, { onConflict: 'org_id,week_start' }).select().single()
+
+      // Delete old assignments for this week
+      await supabase.from('roster_assignments').delete().eq('roster_id', roster.id)
+
+      // Insert new assignments - dedup by staff_id+date to prevent duplicates
+      const insertMap = {}
+      Object.entries(result.schedule).forEach(([staffId, shifts]) => {
+        shifts.forEach((shiftName, di) => {
+          if (!shiftName) return
+          const key = `${staffId}_${currentWeek.dates[di]}`
+          insertMap[key] = {
+            roster_id: roster.id, staff_id: staffId,
+            date: currentWeek.dates[di], shift_name: shiftName,
+          }
+        })
+      })
+      const toInsert = Object.values(insertMap)
+      if (toInsert.length) await supabase.from('roster_assignments').insert(toInsert)
+
+      // Save overtime log
+      const otInserts = Object.entries(result.weekOT).map(([staffId, ot]) => {
+        const s = allStaff.find(x => x.id === staffId)
+        return {
+          staff_id: staffId, roster_id: roster.id,
+          hours_worked: result.hoursPlanned[staffId] || 0,
+          hours_contract: s?.contract_hours || 20,
+          overtime_hours: Math.max(0, ot),
+          compensated_hours: 0,
+        }
+      })
+      if (otInserts.length) {
+        await supabase.from('overtime_log').upsert(otInserts, { onConflict: 'staff_id,roster_id' })
+      }
+
+      await loadAssignments()
+      // Calculate unfilled slots
+      const gaps = calcRosterGaps(result.schedule, templateSlots, currentWeek.dates, allStaff)
+      setRosterGaps(gaps)
+      const msg = gaps.length > 0
+        ? `🪄 Rooster gegenereerd — ⚠️ ${gaps.reduce((a,g)=>a+g.missing,0)} diensten niet ingevuld`
+        : '🪄 Rooster gegenereerd en volledig ingevuld!'
+      show(msg)
+    } catch (e) {
+      show('Fout: ' + e.message)
+    }
+    setGenerating(false)
+  }
+
+  // ── Publish roster ──────────────────────────────────────────────────────
+  async function handlePublish() {
+    const roster = rosters[currentWeek.monday]
+    if (!roster) { show('Geen rooster om te publiceren'); return }
+    await supabase.from('rosters').update({
+      status: 'published', published_at: new Date().toISOString()
+    }).eq('id', roster.id)
+    await loadAssignments()
+    show('✓ Rooster gepubliceerd — personeel ontvangt een melding')
+    // Send push notifications
+    sendPublishNotifications()
+  }
+
+  async function sendPublishNotifications() {
+    const { data: subs } = await supabase.from('push_subscriptions')
+      .select('*').in('staff_id', allStaff.map(s => s.id))
+    if (!subs?.length) return
+    // In production: call a Supabase Edge Function to send push messages
+    // supabase.functions.invoke('send-push', { body: { subscriptions: subs, ... } })
+    console.log(`Would send push to ${subs.length} devices`)
+  }
+
+  // ── Approve/reject helpers ───────────────────────────────────────────────
+  async function reviewLeave(id, status) {
+    await supabase.from('leave_requests').update({
+      status, reviewed_by: me.id, reviewed_at: new Date().toISOString()
+    }).eq('id', id)
+    await loadLeaves()
+    show(status === 'approved' ? '✓ Vrije dag goedgekeurd' : 'Aanvraag afgewezen')
+  }
+
+  async function reviewSwap(id, status) {
+    await supabase.from('swap_requests').update({
+      status, reviewed_by: me.id, reviewed_at: new Date().toISOString()
+    }).eq('id', id)
+    await loadSwaps()
+    show(status === 'approved' ? '✓ Ruiling goedgekeurd' : 'Ruiling afgewezen')
+  }
+
+  // ── Derived data ─────────────────────────────────────────────────────────
+  const currentSchedule = assignments[currentWeek.monday] || {}
+  const currentRoster = rosters[currentWeek.monday]
+  const isPublished = currentRoster?.status === 'published'
+  const pendingLeaves = leaveRequests.filter(l => !l.status || l.status === 'pending')
+  const pendingSwaps = swapRequests.filter(s => s.status === 'pending')
+  const notifications = pendingLeaves.length + pendingSwaps.length
+
+  // Recalculate gaps whenever the current schedule or template changes
+  useEffect(() => {
+    if (Object.keys(currentSchedule).length > 0 && templateSlots.length > 0) {
+      const gaps = calcRosterGaps(currentSchedule, templateSlots, currentWeek.dates, allStaff)
+      setRosterGaps(gaps)
+    } else {
+      setRosterGaps([])
+    }
+  }, [currentSchedule, templateSlots, currentWeek.monday])
+
+  const fin = useMemo(() => calcFinancials(
+    allStaff, currentSchedule, shiftTemplates, currentWeek.dates, holidays
+  ), [allStaff, currentSchedule, shiftTemplates, currentWeek.dates, holidays])
+
+  const tabs = [
+    { id:'dashboard', icon:'📊', l:'Dashboard' },
+    { id:'rooster',   icon:'📅', l:'Rooster' },
+    { id:'historisch',icon:'🗂',  l:'Historisch' },
+    { id:'template',  icon:'🗓',  l:'Template' },
+    { id:'aanvragen', icon:'🔔',  l:'Aanvragen', badge: notifications },
+    { id:'personeel', icon:'👥',  l:'Personeel' },
+    { id:'ziekte',    icon:'🤒',  l:'Ziekte' },
+    { id:'financieel',icon:'💶',  l:'Financieel' },
+    { id:'instellingen',icon:'⚙️',l:'Instellingen' },
+  ]
+
+  if (loading) return (
+    <div style={{ minHeight:'100vh', background:C.bg, display:'flex', alignItems:'center', justifyContent:'center' }}>
+      <div style={{ textAlign:'center' }}><div style={{ fontSize:40, marginBottom:12 }}>🍽</div><div style={{ color:C.inkMuted }}>Laden...</div></div>
+    </div>
+  )
+
+  return (
+    <div style={{ minHeight:'100vh', background:C.bg, fontFamily:"'DM Sans','Segoe UI',sans-serif" }}>
+      {toast && <Toast msg={toast} />}
+
+      {/* Nav */}
+      <div style={{ background:C.ink, padding:'0 16px', position:'sticky', top:0, zIndex:100 }}>
+        <div style={{ display:'flex', alignItems:'center', justifyContent:'space-between', padding:'12px 0 0' }}>
+          <div style={{ display:'flex', alignItems:'center', gap:10 }}>
+            <div style={{ width:36, height:36, borderRadius:10, background:C.gold, display:'flex', alignItems:'center', justifyContent:'center', fontSize:18 }}>🍽</div>
+            <div>
+              <div style={{ color:C.white, fontWeight:900, fontSize:15 }}>RoosterAI</div>
+              <div style={{ color:'rgba(255,255,255,0.3)', fontSize:10, letterSpacing:'0.08em', textTransform:'uppercase' }}>Manager</div>
+            </div>
+          </div>
+          <button onClick={signOut} style={{ ...btn(), background:'rgba(255,255,255,0.07)', color:'rgba(255,255,255,0.4)', padding:'6px 14px', fontSize:12, borderRadius:8 }}>
+            Uitloggen
+          </button>
+        </div>
+        <div style={{ display:'flex', marginTop:10, overflowX:'auto', scrollbarWidth:'none' }}>
+          {tabs.map(t => (
+            <button key={t.id} onClick={() => setTab(t.id)}
+              style={{ ...btn(), flex:'0 0 auto', minWidth:56, background:'transparent', borderRadius:0,
+                color:tab===t.id?C.white:'rgba(255,255,255,0.32)', padding:'9px 6px 13px',
+                fontSize:9, fontWeight:700, borderBottom:`3px solid ${tab===t.id?C.gold:'transparent'}`,
+                display:'flex', flexDirection:'column', alignItems:'center', gap:2, position:'relative' }}>
+              <span style={{ fontSize:15 }}>{t.icon}</span>{t.l}
+              {t.badge > 0 && <span style={{ position:'absolute', top:5, right:'calc(50% - 18px)',
+                background:C.terra, color:C.white, borderRadius:99, fontSize:9, fontWeight:800, padding:'1px 5px' }}>{t.badge}</span>}
+            </button>
+          ))}
+        </div>
+      </div>
+
+      <div style={{ padding:16, maxWidth:1200, margin:'0 auto' }}>
+
+        {/* ── DASHBOARD ── */}
+        {tab === 'dashboard' && (
+          <div style={{ display:'flex', flexDirection:'column', gap:16 }}>
+            <div style={{ display:'flex', justifyContent:'space-between', alignItems:'center', flexWrap:'wrap', gap:10 }}>
+              <div>
+                <div style={{ fontWeight:900, fontSize:22, color:C.ink }}>Dashboard</div>
+                <div style={{ color:C.inkMuted, fontSize:13 }}>
+                  {currentWeek.label}
+
+                </div>
+              </div>
+              <WeekNav week={weekIdx} weeks={weeks.map(w=>w.label)} setWeek={setWeekIdx} />
+            </div>
+
+            {/* Niet ingevulde diensten alert */}
+            {rosterGaps.length > 0 && (
+              <div style={{ background:C.crimsonSoft, border:`1px solid ${C.crimson}44`, borderRadius:14,
+                padding:'12px 18px' }}>
+                <div style={{ fontWeight:800, color:C.crimson, fontSize:14, marginBottom:8 }}>
+                  ⚠️ {rosterGaps.reduce((a,g)=>a+g.missing,0)} diensten niet ingevuld na genereren
+                </div>
+                <div style={{ display:'flex', gap:6, flexWrap:'wrap' }}>
+                  {rosterGaps.map((g, i) => (
+                    <div key={i} style={{ background:C.surface, border:`1px solid ${C.crimson}33`,
+                      borderRadius:8, padding:'5px 10px', fontSize:11 }}>
+                      <span style={{ fontWeight:700, color:C.crimson }}>{DAYS[g.day]}</span>
+                      <span style={{ color:C.inkMuted, marginLeft:4 }}>{DEPTS[g.dept]?.icon} {g.shift_name}</span>
+                      <span style={{ color:C.crimson, marginLeft:4 }}>({g.assigned}/{g.needed})</span>
+                    </div>
+                  ))}
+                </div>
+                <div style={{ color:C.inkMuted, fontSize:11, marginTop:8 }}>
+                  Niet genoeg beschikbaar personeel voor deze slots. Controleer de beschikbaarheid of pas de template aan.
+                </div>
+              </div>
+            )}
+
+            {/* Open diensten alert */}
+            {openShifts.length > 0 && (
+              <div style={{ background:C.amberSoft, border:`1px solid ${C.amber}44`, borderRadius:14,
+                padding:'12px 18px', display:'flex', alignItems:'center', justifyContent:'space-between', flexWrap:'wrap', gap:10 }}>
+                <div style={{ display:'flex', alignItems:'center', gap:10 }}>
+                  <span style={{ fontSize:20 }}>🔓</span>
+                  <div>
+                    <div style={{ fontWeight:800, color:C.amber, fontSize:14 }}>
+                      {openShifts.length} open dienst{openShifts.length > 1 ? 'en' : ''} — niet bezet
+                    </div>
+                    <div style={{ color:C.inkMuted, fontSize:12 }}>
+                      {openShifts.map(o => `${o.date} ${o.shift_name}`).join(' · ')}
+                    </div>
+                  </div>
+                </div>
+                <button onClick={() => setTab('ziekte')}
+                  style={{ ...btn(), background:C.amber, color:C.white, padding:'8px 14px', fontSize:13, borderRadius:10 }}>
+                  Beheren →
+                </button>
+              </div>
+            )}
+
+            {/* KPIs */}
+            <div style={{ display:'grid', gridTemplateColumns:'repeat(auto-fill,minmax(140px,1fr))', gap:10 }}>
+              {[
+                { l:'Diensten', v:Object.values(currentSchedule).flat().filter(Boolean).length, icon:'📅', c:C.sky },
+                { l:'Medewerkers', v:allStaff.length, icon:'👥', c:C.purple },
+                { l:'Loonkosten', v:`€${fin.totalCost.toFixed(0)}`, icon:'💶', c:C.terra },
+                { l:'Aanvragen', v:notifications, icon:'🔔', c:notifications>0?C.terra:C.jade },
+                { l:'Status', v:isPublished?'Gepubliceerd':'Concept', icon:'📋', c:isPublished?C.jade:C.amber },
+              ].map(s => (
+                <Card key={s.l} style={{ padding:'14px 16px' }}>
+                  <div style={{ fontSize:20, marginBottom:6 }}>{s.icon}</div>
+                  <div style={{ color:s.c, fontSize:18, fontWeight:900 }}>{s.v}</div>
+                  <div style={{ color:C.inkMuted, fontSize:11, marginTop:2 }}>{s.l}</div>
+                </Card>
+              ))}
+            </div>
+
+            {/* Publish status */}
+            <div style={{ background:isPublished?C.jadeSoft:C.amberSoft,
+              border:`1px solid ${isPublished?C.jade:C.amber}44`,
+              borderRadius:14, padding:'12px 18px', display:'flex',
+              alignItems:'center', justifyContent:'space-between', flexWrap:'wrap', gap:10 }}>
+              <div style={{ display:'flex', alignItems:'center', gap:10 }}>
+                <div style={{ width:10, height:10, borderRadius:99,
+                  background:isPublished?C.jade:C.amber }}/>
+                <div>
+                  <div style={{ fontWeight:800, color:isPublished?C.jade:C.amber, fontSize:14 }}>
+                    {isPublished ? '✓ Gepubliceerd' : 'Concept — niet zichtbaar voor personeel'}
+                  </div>
+                  <div style={{ color:C.inkMuted, fontSize:12 }}>
+                    {isPublished ? `Gepubliceerd op ${new Date(currentRoster?.published_at).toLocaleDateString('nl-NL')}`
+                      : 'Genereer en publiceer het rooster voor dit week'}
+                  </div>
+                </div>
+              </div>
+              <div style={{ display:'flex', gap:8, alignItems:'center', flexWrap:'wrap' }}>
+                <div style={{ background:'rgba(255,255,255,0.5)', borderRadius:10, padding:'6px 12px' }}>
+                  <div style={{ fontSize:10, fontWeight:700, color:C.inkMid, marginBottom:3 }}>
+                    {scheduleMode <= 33 ? '💰 Laagste kosten' : scheduleMode <= 66 ? '⚖️ Gebalanceerd' : '⭐ Beste kwaliteit'}
+                  </div>
+                  <input type="range" min={0} max={100} value={scheduleMode}
+                    onChange={e => setScheduleMode(+e.target.value)}
+                    style={{ width:90, accentColor:C.terra, cursor:'pointer', height:5 }}/>
+                </div>
+                <button onClick={handleGenerateMonth} disabled={generating}
+                  style={{ ...btn(), background:generating?C.inkMuted:C.sky, color:C.white,
+                    padding:'8px 16px', fontSize:13, borderRadius:10 }}>
+                  {generating ? '⟳ Bezig...' : `🗓 Genereer ${new Date(new Date().getFullYear(), new Date().getMonth()+1, 1).toLocaleDateString('nl-NL',{month:'long'})}`}
+                </button>
+                <button onClick={handleGenerate} disabled={generating}
+                  style={{ ...btn(), background:generating?C.inkMuted:C.terra, color:C.white,
+                    padding:'8px 16px', fontSize:13, borderRadius:10 }}>
+                  {generating ? '⟳ Bezig...' : '🪄 Genereer week'}
+                </button>
+                {currentRoster && !isPublished && (
+                  <button onClick={handleDeleteRoster}
+                    style={{ ...btn(), background:C.crimsonSoft, color:C.crimson,
+                      border:`1px solid ${C.crimson}44`, padding:'8px 14px', fontSize:13, borderRadius:10 }}>
+                    🗑 Verwijder rooster
+                  </button>
+                )}
+                {!isPublished && currentRoster && (
+                  <button onClick={handlePublish}
+                    style={{ ...btn(), background:C.jade, color:C.white, padding:'8px 16px', fontSize:13, borderRadius:10 }}>
+                    Publiceren
+                  </button>
+                )}
+              </div>
+            </div>
+
+            {/* Email herinnering */}
+          {(() => {
+            const noAvail = allStaff.filter(s => s.is_active && s.email && Object.keys(availPatterns[s.id]||{}).length === 0)
+            return noAvail.length > 0 ? (
+              <div style={{ background:C.amberSoft, border:`1px solid ${C.amber}44`, borderRadius:14,
+                padding:'12px 18px', display:'flex', alignItems:'center', justifyContent:'space-between', flexWrap:'wrap', gap:10 }}>
+                <div style={{ display:'flex', alignItems:'center', gap:10 }}>
+                  <span style={{ fontSize:18 }}>📧</span>
+                  <div>
+                    <div style={{ fontWeight:700, color:C.amber, fontSize:14 }}>
+                      {noAvail.length} medewerker(s) zonder beschikbaarheid
+                    </div>
+                    <div style={{ color:C.inkMuted, fontSize:12 }}>
+                      {noAvail.map(s=>s.name.split(' ')[0]).join(', ')}
+                    </div>
+                  </div>
+                </div>
+                <button onClick={sendReminderEmails}
+                  style={{ ...btn(), background:C.amber, color:C.white, padding:'8px 16px', fontSize:13, borderRadius:10 }}>
+                  📧 Stuur herinnering
+                </button>
+              </div>
+            ) : null
+          })()}
+
+          {/* Bezetting per dag */}
+            <Card style={{ padding:20 }}>
+              <div style={{ fontWeight:700, fontSize:13, color:C.inkMid, marginBottom:14 }}>BEZETTING PER DAG</div>
+              <div style={{ display:'flex', gap:6 }}>
+                {DAYS.map((d, di) => {
+                  const n = allStaff.filter(s => currentSchedule[s.id]?.[di]).length
+                  const peak = peakMoments.find(p => p.date === currentWeek.dates[di])
+                  return (
+                    <div key={d} style={{ flex:1, textAlign:'center' }}>
+                      <div style={{ background:peak?C.crimsonSoft:C.jadeSoft,
+                        border:`1px solid ${peak?C.crimson:C.jade}44`,
+                        borderRadius:10, padding:'10px 4px' }}>
+                        <div style={{ fontWeight:900, fontSize:18, color:peak?C.crimson:C.jade }}>{n}</div>
+                        <div style={{ color:C.inkMuted, fontSize:9 }}>pers.</div>
+                      </div>
+                      <div style={{ color:peak?C.crimson:C.inkMuted, fontSize:10, marginTop:4, fontWeight:700 }}>
+                        {d}{peak?' 🔥':''}
+                      </div>
+                    </div>
+                  )
+                })}
+              </div>
+            </Card>
+          </div>
+        )}
+
+        {/* ── ROOSTER ── */}
+        {tab === 'rooster' && (
+          <RoosterTab
+            allStaff={allStaff} currentSchedule={currentSchedule}
+            currentWeek={currentWeek} shiftTemplates={shiftTemplates}
+            templateSlots={templateSlots}
+            peakMoments={peakMoments} leaveRequests={leaveRequests}
+            availPatterns={availPatterns} availOverrides={availOverrides}
+            capacities={capacities} isPublished={isPublished}
+            weekIdx={weekIdx} weeks={weeks} setWeekIdx={setWeekIdx}
+            onGenerate={handleGenerate} generating={generating}
+            onPublish={handlePublish}
+            openShifts={openShifts}
+            rosterGaps={rosterGaps}
+            onDelete={currentRoster && !isPublished ? handleDeleteRoster : null}
+            onCellChange={async (staffId, di, shiftName) => {
+              const roster = currentRoster || (await supabase.from('rosters').upsert({
+                org_id: orgId, week_start: currentWeek.monday, status:'concept'
+              }, { onConflict:'org_id,week_start' }).select().single()).data
+              if (shiftName) {
+                await supabase.from('roster_assignments').upsert({
+                  roster_id: roster.id, staff_id: staffId,
+                  date: currentWeek.dates[di], shift_name: shiftName,
+                }, { onConflict:'roster_id,staff_id,date' })
+              } else {
+                await supabase.from('roster_assignments').delete()
+                  .eq('roster_id', roster.id).eq('staff_id', staffId).eq('date', currentWeek.dates[di])
+              }
+              await loadAssignments()
+              show('✓ Dienst bijgewerkt')
+            }}
+          />
+        )}
+
+        {/* ── HISTORISCH ── */}
+        {tab === 'historisch' && (
+          <HistorischTab
+            weeks={weeks} rosters={rosters} assignments={assignments}
+            allStaff={allStaff} shiftTemplates={shiftTemplates}
+            weekIdx={weekIdx} setWeekIdx={setWeekIdx}
+          />
+        )}
+
+        {/* ── TEMPLATE ── */}
+        {tab === 'template' && (
+          <TemplateTab
+            templateSlots={templateSlots} shiftTemplates={shiftTemplates}
+            peakMoments={peakMoments} holidays={holidays}
+            recurringPeaks={recurringPeaks} setRecurringPeaks={setRecurringPeaks}
+            bezettingTemplates={bezettingTemplates}
+            activeTemplateId={activeTemplateId}
+            setActiveTemplateId={setActiveTemplateId}
+            orgId={orgId} onReload={loadAll}
+            onReloadSlots={loadTemplateSlots}
+            show={show}
+          />
+        )}
+
+        {/* ── AANVRAGEN ── */}
+        {tab === 'aanvragen' && (
+          <AanvragenTab
+            pendingLeaves={pendingLeaves} pendingSwaps={pendingSwaps}
+            onLeave={reviewLeave} onSwap={reviewSwap}
+          />
+        )}
+
+        {/* ── PERSONEEL ── */}
+        {tab === 'personeel' && (
+          <PersoneelTab
+            allStaff={allStaff} capacities={capacities}
+            orgId={orgId} onReload={loadAll} show={show}
+            shiftTemplates={shiftTemplates}
+            currentSchedule={currentSchedule}
+            overtimeLog={overtimeLog}
+            availPatterns={availPatterns}
+          />
+        )}
+
+        {/* ── FINANCIEEL ── */}
+        {tab === 'ziekte' && (
+          <ZiekteTab
+            allStaff={allStaff}
+            currentSchedule={currentSchedule}
+            currentWeek={currentWeek}
+            shiftTemplates={shiftTemplates}
+            orgId={orgId}
+            onReload={loadAll}
+            show={show}
+          />
+        )}
+
+        {tab === 'financieel' && (
+          <FinancieelTab
+            fin={fin} allStaff={allStaff}
+            currentSchedule={currentSchedule}
+            shiftTemplates={shiftTemplates}
+            currentWeek={currentWeek}
+            weekIdx={weekIdx} weeks={weeks} setWeekIdx={setWeekIdx}
+            DAYS={DAYS}
+          />
+        )}
+
+        {/* ── INSTELLINGEN ── */}
+        {tab === 'instellingen' && (
+          <InstellingenTab
+            settings={settings} orgId={orgId}
+            shiftTemplates={shiftTemplates}
+            onReload={loadAll} show={show}
+          />
+        )}
+      </div>
+    </div>
+  )
+}
+
+// ── Sub-components ────────────────────────────────────────────────────────────
+
+function RoosterTab({ allStaff, currentSchedule, currentWeek, shiftTemplates, templateSlots, peakMoments,
+  leaveRequests, availPatterns, availOverrides, capacities, isPublished,
+  weekIdx, weeks, setWeekIdx, onGenerate, generating, onPublish, onDelete, openShifts, rosterGaps, onCellChange }) {
+  const [editCell, setEditCell] = useState(null)
+
+  const staffByDept = useMemo(() => {
+    const o = {}
+    // Each staff member appears only under their first/primary dept
+    // to avoid showing them multiple times in the roster
+    DEPT_KEYS.forEach(dk => {
+      o[dk] = allStaff.filter(s => s.depts?.includes(dk) && s.depts?.[0] === dk)
+    })
+    // Safety: staff with no primary dept match still appear under first dept they belong to
+    allStaff.forEach(s => {
+      if (!s.depts?.length) return
+      const appearsInAny = DEPT_KEYS.some(dk => o[dk]?.find(x => x.id === s.id))
+      if (!appearsInAny) {
+        const firstDept = s.depts[0]
+        if (o[firstDept]) o[firstDept].push(s)
+      }
+    })
+    return o
+  }, [allStaff])
+
+  return (
+    <div style={{ display:'flex', flexDirection:'column', gap:14 }}>
+      {editCell && <div style={{ position:'fixed', inset:0, zIndex:8 }} onClick={() => setEditCell(null)}/>}
+      <div style={{ display:'flex', justifyContent:'space-between', alignItems:'center', flexWrap:'wrap', gap:10 }}>
+        <WeekNav week={weekIdx} weeks={weeks.map(w=>w.label)} setWeek={setWeekIdx} />
+        <div style={{ display:'flex', gap:8, alignItems:'center' }}>
+          <button onClick={onGenerate} disabled={generating || isPublished}
+            style={{ ...btn(), background:isPublished?C.inkMuted:C.terra, color:C.white,
+              padding:'10px 18px', fontSize:13, borderRadius:11, opacity:isPublished?0.5:1 }}>
+            {generating ? '⟳ Bezig...' : '🪄 Genereer'}
+          </button>
+          {onDelete && (
+            <button onClick={onDelete}
+              style={{ ...btn(), background:C.crimsonSoft, color:C.crimson,
+                border:`1px solid ${C.crimson}44`, padding:'10px 14px', fontSize:13, borderRadius:11 }}>
+              🗑 Verwijder rooster
+            </button>
+          )}
+          {!isPublished && (
+            <button onClick={onPublish}
+              style={{ ...btn(), background:C.jade, color:C.white, padding:'10px 18px', fontSize:13, borderRadius:11 }}>
+              Publiceren
+            </button>
+          )}
+        </div>
+      </div>
+
+      {/* Day indicator row */}
+      <div style={{ display:'flex', gap:5 }}>
+        {DAYS.map((d, di) => {
+          const peak = peakMoments.find(p => p.date === currentWeek.dates[di])
+          const dayOpenShifts = (openShifts||[]).filter(o => o.date === currentWeek.dates[di])
+          return (
+            <div key={d} style={{ flex:1, textAlign:'center', padding:'5px 3px', borderRadius:8,
+              background:peak?C.crimsonSoft:'transparent',
+              border:`1px solid ${peak?C.crimson+'44':'#EEE9E0'}` }}>
+              <div style={{ fontWeight:700, fontSize:11, color:peak?C.crimson:C.inkMuted }}>{d}</div>
+              {peak && <div style={{ fontSize:8, color:C.crimson }}>🔥</div>}
+              {dayOpenShifts.length > 0 && (
+                <div style={{ fontSize:8, color:C.amber, fontWeight:700 }}>🔓{dayOpenShifts.length}</div>
+              )}
+            </div>
+          )
+        })}
+      </div>
+
+      {/* Niet ingevulde diensten banner */}
+      {(rosterGaps||[]).length > 0 && (
+        <div style={{ background:C.crimsonSoft, border:`1px solid ${C.crimson}44`, borderRadius:12, padding:'10px 14px' }}>
+          <div style={{ fontWeight:700, color:C.crimson, fontSize:13, marginBottom:6 }}>
+            ⚠️ Niet ingevulde diensten ({rosterGaps.reduce((a,g)=>a+g.missing,0)})
+          </div>
+          <div style={{ display:'flex', gap:6, flexWrap:'wrap' }}>
+            {rosterGaps.map((g, i) => (
+              <div key={i} style={{ background:C.surface, border:`1px solid ${C.crimson}33`, borderRadius:8, padding:'4px 10px', fontSize:11 }}>
+                <span style={{ fontWeight:700, color:C.crimson }}>{DAYS[g.day]}</span>
+                <span style={{ color:C.inkMuted, marginLeft:4 }}>{DEPTS[g.dept]?.icon} {g.shift_name} ({g.assigned}/{g.needed})</span>
+              </div>
+            ))}
+          </div>
+        </div>
+      )}
+
+      {/* Open shifts banner */}
+      {(openShifts||[]).filter(o => currentWeek.dates.includes(o.date)).length > 0 && (
+        <div style={{ background:C.amberSoft, border:`1px solid ${C.amber}44`, borderRadius:12, padding:'10px 14px' }}>
+          <div style={{ fontWeight:700, color:C.amber, fontSize:13, marginBottom:6 }}>🔓 Open diensten deze week</div>
+          <div style={{ display:'flex', gap:6, flexWrap:'wrap' }}>
+            {(openShifts||[]).filter(o => currentWeek.dates.includes(o.date)).map(o => (
+              <div key={o.id} style={{ background:C.surface, border:`1px solid ${C.amber}44`,
+                borderRadius:8, padding:'5px 10px', fontSize:12 }}>
+                <span style={{ fontWeight:700 }}>{DAYS[currentWeek.dates.indexOf(o.date)]}</span>
+                <span style={{ color:C.inkMuted, marginLeft:4 }}>{o.shift_name}</span>
+                {o.original_staff && <span style={{ color:C.inkMuted, marginLeft:4 }}>({o.original_staff.name})</span>}
+              </div>
+            ))}
+          </div>
+        </div>
+      )}
+
+      {/* Roster by department - slot based view */}
+      {(() => {
+        // Pre-compute global assignment: for each day, track which staff are claimed
+        // Process DEPT_KEYS in order so each staff member appears in only one dept
+        const claimed = {} // { 'staffId_di': true }
+
+        const deptGrids = DEPT_KEYS.map(dk => {
+          const dept = DEPTS[dk]
+          const deptShifts = [...new Set(
+            templateSlots
+              .filter(s => s.dept === dk && s.is_recurring)
+              .sort((a,b) => {
+                const ta = shiftTemplates[a.shift_name]?.start_time || ''
+                const tb = shiftTemplates[b.shift_name]?.start_time || ''
+                return ta.localeCompare(tb)
+              })
+              .map(s => s.shift_name)
+          )]
+          if (!deptShifts.length) return null
+
+          const slotGrid = deptShifts.map(shiftName => {
+            const shift = shiftTemplates[shiftName]
+            const days = DAYS.map((_, di) => {
+              const slotDef = templateSlots.find(s =>
+                s.dept === dk && s.shift_name === shiftName &&
+                s.is_recurring && s.day_of_week === di
+              )
+              const slotCount = slotDef?.count || 1
+
+              // Find available staff: has this dept, has this shift, not yet claimed today
+              const candidates = allStaff
+                .filter(s =>
+                  s.depts?.includes(dk) &&
+                  currentSchedule[s.id]?.[di] === shiftName &&
+                  !claimed[`${s.id}_${di}`]
+                )
+                .sort((a,b) => (capacities[b.id]?.[dk]||5) - (capacities[a.id]?.[dk]||5))
+                .slice(0, slotCount)
+
+              // Mark these staff as claimed for this day
+              candidates.forEach(s => { claimed[`${s.id}_${di}`] = true })
+
+              return candidates
+            })
+            return { shiftName, shift, days }
+          })
+
+          return { dk, dept, deptShifts, slotGrid }
+        }).filter(Boolean)
+
+        return deptGrids.map(({ dk, dept, slotGrid }) => (
+          <div key={dk}>
+            <div style={{ display:'flex', alignItems:'center', gap:10, padding:'10px 14px',
+              background:dept.color+'12', border:`1px solid ${dept.color}33`,
+              borderRadius:12, marginBottom:6 }}>
+              <span style={{ fontSize:18 }}>{dept.icon}</span>
+              <span style={{ fontWeight:800, color:dept.color, fontSize:14 }}>{dept.label}</span>
+            </div>
+            <Card style={{ padding:12, overflowX:'auto', marginBottom:4 }}>
+              <table style={{ width:'100%', borderCollapse:'separate', borderSpacing:'0 3px', minWidth:600 }}>
+                <thead>
+                  <tr>
+                    <th style={{ textAlign:'left', color:C.inkMuted, fontSize:11, fontWeight:700, padding:'0 8px 8px 0', minWidth:120 }}>Dienst</th>
+                    {DAYS_FULL.map((d, i) => (
+                      <th key={d} style={{ color:C.inkMuted, fontSize:10, fontWeight:700, padding:'0 3px 8px', textAlign:'center', minWidth:90 }}>
+                        {DAYS[i]}<br/><span style={{ fontSize:9, fontWeight:400 }}>{formatDate(currentWeek.dates[i])}</span>
+                      </th>
+                    ))}
+                  </tr>
+                </thead>
+                <tbody>
+                  {slotGrid.map(({ shiftName, shift, days }) => (
+                    <tr key={shiftName}>
+                      <td style={{ padding:'3px 8px 3px 0' }}>
+                        <div style={{ fontWeight:700, fontSize:12, color:dept.color }}>{shiftName}</div>
+                        {shift && <div style={{ color:C.inkMuted, fontSize:10 }}>{shift.start_time}–{shift.end_time}</div>}
+                      </td>
+                      {days.map((staffList, di) => {
+                        const peak = peakMoments.find(p => p.date === currentWeek.dates[di])
+                        const openHere = (openShifts||[]).find(o =>
+                          o.date === currentWeek.dates[di] && o.shift_name === shiftName
+                        )
+                        return (
+                          <td key={di} style={{ padding:'0 3px', verticalAlign:'top' }}>
+                            <div style={{ minHeight:36, padding:'3px', borderRadius:7,
+                              background:peak ? dept.color+'10' : 'transparent',
+                              border:`1px solid ${staffList.length ? dept.color+'33' : staffList.length === 0 ? C.crimson+'33' : '#EEE9E0'}` }}>
+                              {staffList.length === 0 && openHere && (
+                                <div style={{ fontSize:9, color:C.amber, fontWeight:700, textAlign:'center', paddingTop:4 }}>🔓 Open</div>
+                              )}
+                              {staffList.length === 0 && !openHere && (
+                                <div style={{ fontSize:9, color:C.crimson, fontWeight:700, textAlign:'center', paddingTop:4 }}>⚠ Leeg</div>
+                              )}
+                              {staffList.map(s => (
+                                <div key={s.id}
+                                  style={{ display:'flex', alignItems:'center', gap:4, padding:'2px 4px',
+                                    borderRadius:5, marginBottom:2,
+                                    background:s.color+'18' }}>
+                                  <div style={{ width:6, height:6, borderRadius:99, background:s.color, flexShrink:0 }}/>
+                                  <span style={{ fontSize:10, fontWeight:700, color:C.ink, whiteSpace:'nowrap' }}>
+                                    {s.name.split(' ')[0]}
+                                  </span>
+                                </div>
+                              ))}
+                            </div>
+                          </td>
+                        )
+                      })}
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </Card>
+          </div>
+        ))
+      })()}
+      {!isPublished && <div style={{ color:C.inkMuted, fontSize:11, textAlign:'center' }}>💡 Klik op een cel om een dienst aan te passen</div>}
+    </div>
+  )
+}
+
+function parseTime(t) {
+  if (!t) return 0
+  const [h, m] = t.split(':').map(Number)
+  return h * 60 + m
+}
+
+function HistorischTab({ weeks, rosters, assignments, allStaff, shiftTemplates, weekIdx, setWeekIdx }) {
+  const publishedWeeks = weeks.filter(w => rosters[w.monday]?.status === 'published')
+
+  return (
+    <div style={{ display:'flex', flexDirection:'column', gap:14 }}>
+      <div style={{ fontWeight:900, fontSize:20, color:C.ink }}>Historisch overzicht</div>
+      {publishedWeeks.length === 0 && (
+        <Card style={{ textAlign:'center', padding:48 }}>
+          <div style={{ fontSize:36, marginBottom:8 }}>🗂</div>
+          <div style={{ color:C.inkMuted }}>Nog geen gepubliceerde roosters</div>
+        </Card>
+      )}
+      {publishedWeeks.map(w => {
+        const sched = assignments[w.monday] || {}
+        const totalShifts = Object.values(sched).flat().filter(Boolean).length
+        const roster = rosters[w.monday]
+        return (
+          <Card key={w.monday} onClick={() => setWeekIdx(weeks.findIndex(x => x.monday === w.monday))}
+            style={{ padding:'14px 16px', cursor:'pointer' }}>
+            <div style={{ display:'flex', justifyContent:'space-between', alignItems:'center', flexWrap:'wrap', gap:8 }}>
+              <div>
+                <div style={{ fontWeight:700, fontSize:15, color:C.ink }}>{w.label}</div>
+                <div style={{ color:C.inkMuted, fontSize:12, marginTop:2 }}>
+                  {totalShifts} diensten · Gepubliceerd {new Date(roster.published_at).toLocaleDateString('nl-NL')}
+                </div>
+              </div>
+              <div style={{ display:'flex', gap:6 }}>
+                <Badge color={C.jade}>✓ Gepubliceerd</Badge>
+                <Badge color={C.inkMuted}>{totalShifts} diensten</Badge>
+              </div>
+            </div>
+            <div style={{ display:'flex', gap:3, marginTop:10 }}>
+              {DAYS.map((d, di) => {
+                const n = allStaff.filter(s => sched[s.id]?.[di]).length
+                return (
+                  <div key={d} style={{ flex:1, textAlign:'center' }}>
+                    <div style={{ height:20, borderRadius:4, background:n>0?C.sky:C.surfaceAlt, opacity:n>0?1:0.3 }}/>
+                    <div style={{ fontSize:8, color:C.inkMuted, marginTop:2 }}>{d}</div>
+                    <div style={{ fontSize:8, fontWeight:700, color:C.sky }}>{n||''}</div>
+                  </div>
+                )
+              })}
+            </div>
+          </Card>
+        )
+      })}
+    </div>
+  )
+}
+
+function TemplateTab({ templateSlots: initialSlots, shiftTemplates, peakMoments, holidays, recurringPeaks, setRecurringPeaks, bezettingTemplates, activeTemplateId, setActiveTemplateId, onReloadSlots, orgId, onReload, show }) {
+  const [dayTab, setDayTab] = useState(0)
+  const [newPeak, setNewPeak] = useState({ date:'', label:'', slots:7 })
+  const [newHoliday, setNewHoliday] = useState({ date:'', name:'', is_closed:false })
+  const [newTmplName, setNewTmplName] = useState('')
+  const [newTmplDesc, setNewTmplDesc] = useState('')
+  const [showNewTmpl, setShowNewTmpl] = useState(false)
+  // recurringPeaks comes from AdminApp props
+
+  async function createBezettingTemplate() {
+    if (!newTmplName.trim()) { show('Voer een naam in'); return }
+    const { data: newT } = await supabase.from('bezetting_templates').insert({
+      org_id: orgId, name: newTmplName, description: newTmplDesc, is_default: false
+    }).select().single()
+    if (newT) {
+      // Copy slots from active template to new template
+      const currentSlots = localSlots.filter(s => s.is_recurring)
+      if (currentSlots.length) {
+        const copies = currentSlots.map(s => ({
+          org_id: orgId, day_of_week: s.day_of_week, dept: s.dept,
+          shift_name: s.shift_name, count: s.count, is_recurring: true,
+          bezetting_template_id: newT.id
+        }))
+        await supabase.from('template_slots').insert(copies)
+      }
+      setNewTmplName(''); setNewTmplDesc(''); setShowNewTmpl(false)
+      setActiveTemplateId(newT.id)
+      onReload()
+      show(`✓ Template "${newT.name}" aangemaakt${currentSlots.length ? ' (gekopieerd van huidige template)' : ''}`)
+    }
+  }
+
+  async function deleteBezettingTemplate(id) {
+    const tmpl = bezettingTemplates.find(t => t.id === id)
+    if (tmpl?.is_default) { show('Standaard template kan niet verwijderd worden'); return }
+    await supabase.from('template_slots').delete().eq('bezetting_template_id', id)
+    await supabase.from('bezetting_templates').delete().eq('id', id)
+    const def = bezettingTemplates.find(t => t.is_default)
+    if (def) setActiveTemplateId(def.id)
+    onReload()
+    show(`✓ Template "${tmpl?.name}" verwijderd`)
+  }
+  const [localSlots, setLocalSlots] = useState(initialSlots)
+
+  // Keep localSlots in sync when parent reloads (e.g. first load)
+  const prevInitial = useRef(initialSlots)
+  useEffect(() => {
+    if (prevInitial.current !== initialSlots) {
+      prevInitial.current = initialSlots
+      setLocalSlots(initialSlots)
+    }
+  }, [initialSlots])
+
+  // Use localSlots instead of templateSlots throughout
+  const templateSlots = localSlots
+
+  async function addSlot(dk) {
+    const newSlot = {
+      org_id: orgId, day_of_week: dayTab, dept: dk,
+      shift_name: (Object.keys(shiftTemplates).sort((a,b) => { const ta = shiftTemplates[a]?.start_time||''; const tb = shiftTemplates[b]?.start_time||''; return ta.localeCompare(tb); }))[0] || 'Ochtend',
+      count: 1, is_recurring: true,
+      bezetting_template_id: activeTemplateId || null,
+    }
+    const { data } = await supabase.from('template_slots').insert(newSlot).select().single()
+    if (data) setLocalSlots(ls => [...ls, data])
+    show('✓ Slot toegevoegd')
+  }
+
+  async function updateSlot(id, changes) {
+    await supabase.from('template_slots').update(changes).eq('id', id)
+    setLocalSlots(ls => ls.map(s => s.id === id ? { ...s, ...changes } : s))
+    }
+
+  async function removeSlot(id) {
+    await supabase.from('template_slots').delete().eq('id', id)
+    setLocalSlots(ls => ls.filter(s => s.id !== id))
+    show('✓ Slot verwijderd')
+  }
+
+  async function addPeak() {
+    if (!newPeak.date) return
+    await supabase.from('peak_moments').insert({ org_id: orgId, ...newPeak })
+    setNewPeak({ date:'', label:'', slots:7 }); onReload(); show('✓ Piek moment toegevoegd')
+  }
+
+  async function addHoliday() {
+    if (!newHoliday.date || !newHoliday.name) return
+    await supabase.from('public_holidays').insert({ org_id: orgId, ...newHoliday })
+    setNewHoliday({ date:'', name:'', is_closed:true }); onReload(); show('✓ Feestdag toegevoegd')
+  }
+
+  const daySlots = templateSlots.filter(s => s.is_recurring && s.day_of_week === dayTab)
+
+  return (
+    <div style={{ display:'flex', flexDirection:'column', gap:16 }}>
+      <div style={{ display:'flex', justifyContent:'space-between', alignItems:'center', flexWrap:'wrap', gap:10 }}>
+        <div>
+          <div style={{ fontWeight:900, fontSize:20, color:C.ink }}>Bezettingstemplate</div>
+          <div style={{ color:C.inkMuted, fontSize:13, marginTop:2 }}>Maak meerdere templates voor verschillende situaties (normaal, vakantie, kerst etc.)</div>
+        </div>
+        <div style={{ display:'flex', gap:8 }}>
+          <button onClick={async () => {
+            if (!window.confirm('Weet je zeker dat je ALLE slots van dit template wilt verwijderen?')) return
+            const tid = activeTemplateId
+            if (!tid) { show('Geen actief template geselecteerd'); return }
+            const { error } = await supabase.from('template_slots').delete()
+              .eq('org_id', orgId)
+              .eq('bezetting_template_id', tid)
+            if (error) { show('Fout: ' + error.message); return }
+            setLocalSlots(ls => ls.filter(s => s.bezetting_template_id !== tid))
+            onReload()
+            show('✓ Alle slots verwijderd')
+          }} style={{ ...btn(), background:C.crimsonSoft, color:C.crimson,
+            border:`1px solid ${C.crimson}44`, padding:'8px 14px', fontSize:13, borderRadius:10 }}>
+            🗑 Wis template
+          </button>
+          <button onClick={() => setShowNewTmpl(v => !v)}
+            style={{ ...btn(), background:C.ink, color:C.white, padding:'8px 16px', fontSize:13, borderRadius:10 }}>
+            ＋ Nieuwe template
+          </button>
+        </div>
+      </div>
+
+      {/* New template form */}
+      {showNewTmpl && (
+        <Card style={{ padding:16, border:`1px solid ${C.sky}44`, background:C.skySoft }}>
+          <div style={{ fontWeight:700, fontSize:14, marginBottom:12, color:C.sky }}>Nieuwe template aanmaken</div>
+          <div style={{ display:'flex', gap:8, marginBottom:10, flexWrap:'wrap' }}>
+            <input value={newTmplName} onChange={e => setNewTmplName(e.target.value)}
+              placeholder="Naam (bijv. Vakantieweek, Kerst...)"
+              style={{ flex:2, padding:'9px 12px', borderRadius:10, border:`1px solid ${C.border}`, fontSize:13, minWidth:160 }}/>
+            <input value={newTmplDesc} onChange={e => setNewTmplDesc(e.target.value)}
+              placeholder="Omschrijving (optioneel)"
+              style={{ flex:2, padding:'9px 12px', borderRadius:10, border:`1px solid ${C.border}`, fontSize:13, minWidth:120 }}/>
+          </div>
+          <div style={{ fontSize:12, color:C.inkMuted, marginBottom:10 }}>
+            💡 Huidige bezetting wordt gekopieerd als startpunt.
+          </div>
+          <div style={{ display:'flex', gap:8 }}>
+            <button onClick={() => setShowNewTmpl(false)}
+              style={{ ...btn(), flex:1, background:'#EBE7DE', color:C.inkMid, padding:'9px', borderRadius:10 }}>Annuleren</button>
+            <button onClick={createBezettingTemplate}
+              style={{ ...btn(), flex:2, background:C.sky, color:C.white, padding:'9px', borderRadius:10 }}>✓ Aanmaken</button>
+          </div>
+        </Card>
+      )}
+
+      {/* Template selector */}
+      {bezettingTemplates.length > 0 && (
+        <div style={{ display:'flex', gap:6, overflowX:'auto', paddingBottom:2 }}>
+          {bezettingTemplates.map(t => (
+            <div key={t.id} style={{ display:'flex', alignItems:'center', gap:4, flexShrink:0 }}>
+              <button onClick={() => { setActiveTemplateId(t.id); onReloadSlots && onReloadSlots(t.id) }}
+                style={{ ...btn(), padding:'8px 14px', borderRadius:10, fontSize:13, fontWeight:700,
+                  background:activeTemplateId===t.id?C.ink:'transparent',
+                  color:activeTemplateId===t.id?C.white:C.inkMuted,
+                  border:`1.5px solid ${activeTemplateId===t.id?C.ink:C.border}` }}>
+                {t.is_default ? '⭐ ' : ''}{t.name}
+              </button>
+              {!t.is_default && (
+                <button onClick={() => deleteBezettingTemplate(t.id)}
+                  style={{ ...btn(), background:C.crimsonSoft, color:C.crimson, padding:'6px 8px', fontSize:11, borderRadius:8 }}>✕</button>
+              )}
+            </div>
+          ))}
+        </div>
+      )}
+
+      {/* Day tabs */}
+      <div style={{ display:'flex', gap:4, overflowX:'auto' }}>
+        {DAYS_FULL.map((d, di) => {
+          const count = templateSlots.filter(s => s.is_recurring && s.day_of_week === di).reduce((a, s) => a+s.count, 0)
+          return (
+            <button key={di} onClick={() => setDayTab(di)}
+              style={{ ...btn(), flexShrink:0, padding:'9px 14px', borderRadius:10, fontSize:13, fontWeight:700,
+                background:dayTab===di?C.ink:'transparent', color:dayTab===di?C.white:C.inkMuted,
+                border:`1.5px solid ${dayTab===di?C.ink:C.border}` }}>
+              {DAYS[di]}
+              {count > 0 && <span style={{ marginLeft:5, background:dayTab===di?C.gold:C.jade,
+                color:C.white, borderRadius:99, fontSize:9, padding:'1px 6px', fontWeight:800 }}>{count}</span>}
+            </button>
+          )
+        })}
+      </div>
+
+      {/* Slot editor */}
+      <Card style={{ padding:20 }}>
+        <div style={{ display:'flex', justifyContent:'space-between', alignItems:'center', marginBottom:16, flexWrap:'wrap', gap:8 }}>
+          <div style={{ fontWeight:800, fontSize:15 }}>{DAYS_FULL[dayTab]}</div>
+          <div style={{ display:'flex', gap:6, flexWrap:'wrap' }}>
+            <div style={{ fontSize:11, color:C.inkMuted, alignSelf:'center' }}>Kopieer van:</div>
+            {DAYS_FULL.map((d, di) => di !== dayTab && (
+              <button key={di} onClick={async () => {
+                // Get slots from source day using localSlots
+                const sourceSlots = localSlots.filter(s => s.is_recurring && s.day_of_week === di)
+                if (!sourceSlots.length) { show(`Geen slots op ${d}`); return }
+                // Delete ALL existing slots for target day from DB (hard delete by org+day)
+                const { error: delErr } = await supabase.from('template_slots').delete()
+                  .eq('org_id', orgId)
+                  .eq('day_of_week', dayTab)
+                  .eq('is_recurring', true)
+                if (delErr) { show('Fout bij verwijderen: ' + delErr.message); return }
+                // Insert copies for target day in DB
+                const inserts = sourceSlots.map(s => ({
+                  org_id: orgId, day_of_week: dayTab,
+                  dept: s.dept, shift_name: s.shift_name,
+                  count: s.count, is_recurring: true,
+                  bezetting_template_id: s.bezetting_template_id || null,
+                }))
+                const { data: newSlots, error: insErr } = await supabase
+                  .from('template_slots').insert(inserts).select()
+                if (insErr) { show('Fout bij kopiëren: ' + insErr.message); return }
+                // Update local state with DB-returned rows (includes real IDs)
+                setLocalSlots(ls => [
+                  ...ls.filter(s => !(s.is_recurring && s.day_of_week === dayTab)),
+                  ...(newSlots || [])
+                ])
+                show(`✓ ${DAYS_FULL[dayTab]} gekopieerd van ${d}`)
+              }} style={{ ...btn(), background:C.surfaceAlt, color:C.inkMid,
+                border:`1px solid ${C.border}`, padding:'5px 10px', fontSize:11, borderRadius:7 }}>
+                {DAYS[di]}
+              </button>
+            ))}
+          </div>
+        </div>
+        {DEPT_KEYS.map(dk => {
+          const dept = DEPTS[dk]
+          const slots = daySlots.filter(s => s.dept === dk)
+          return (
+            <div key={dk} style={{ marginBottom:20, paddingBottom:20, borderBottom:`1px solid ${C.borderLight}` }}>
+              <div style={{ display:'flex', alignItems:'center', justifyContent:'space-between', marginBottom:10 }}>
+                <div style={{ display:'flex', alignItems:'center', gap:8 }}>
+                  <span style={{ fontSize:18 }}>{dept.icon}</span>
+                  <span style={{ fontWeight:800, color:dept.color, fontSize:14 }}>{dept.label}</span>
+                  {slots.length > 0 && <Badge color={dept.color}>{slots.reduce((a,s)=>a+s.count,0)} pers.</Badge>}
+                </div>
+                <button onClick={() => addSlot(dk)}
+                  style={{ ...btn(), background:dept.color+'18', color:dept.color,
+                    border:`1px solid ${dept.color}44`, padding:'5px 12px', fontSize:12, borderRadius:8 }}>
+                  ＋ Dienst
+                </button>
+              </div>
+              {slots.length === 0 && <div style={{ color:C.inkMuted, fontSize:12, fontStyle:'italic' }}>Geen diensten op {DAYS_FULL[dayTab]}</div>}
+              {slots.map(slot => (
+                <div key={slot.id} style={{ display:'flex', alignItems:'center', gap:8, marginBottom:8,
+                  padding:'10px 12px', background:C.surfaceAlt, borderRadius:10 }}>
+                  <select value={slot.shift_name}
+                    onChange={e => updateSlot(slot.id, { shift_name: e.target.value })}
+                    style={{ flex:2, padding:'7px 10px', borderRadius:8, border:`1px solid ${C.border}`, fontSize:13, color:C.ink }}>
+                    {Object.keys(shiftTemplates).sort((a,b) => { const ta = shiftTemplates[a]?.start_time||''; const tb = shiftTemplates[b]?.start_time||''; return ta.localeCompare(tb); }).map(n => {
+                      const t = shiftTemplates[n]
+                      return <option key={n} value={n}>{n} ({t.start_time}–{t.end_time})</option>
+                    })}
+                  </select>
+                  <div style={{ display:'flex', alignItems:'center', gap:6, background:C.surface,
+                    borderRadius:8, border:`1px solid ${C.border}`, padding:'4px 8px', flexShrink:0 }}>
+                    <button onClick={() => updateSlot(slot.id, { count: Math.max(1, slot.count-1) })}
+                      style={{ ...btn(), background:'transparent', color:C.ink, padding:'0 6px', fontSize:16, borderRadius:4 }}>−</button>
+                    <span style={{ fontWeight:800, fontSize:14, minWidth:20, textAlign:'center', color:C.ink }}>{slot.count}</span>
+                    <button onClick={() => updateSlot(slot.id, { count: slot.count+1 })}
+                      style={{ ...btn(), background:'transparent', color:C.ink, padding:'0 6px', fontSize:16, borderRadius:4 }}>＋</button>
+                  </div>
+                  <span style={{ color:C.inkMuted, fontSize:12, flexShrink:0 }}>{slot.count} pers.</span>
+                  <button onClick={() => removeSlot(slot.id)}
+                    style={{ ...btn(), background:C.crimsonSoft, color:C.crimson, padding:'5px 9px', borderRadius:7, fontSize:12 }}>✕</button>
+                </div>
+              ))}
+            </div>
+          )
+        })}
+      </Card>
+
+      {/* Peak moments */}
+      <Card style={{ padding:20 }}>
+        <div style={{ fontWeight:800, fontSize:15, marginBottom:4 }}>🔥 Piek momenten</div>
+        <div style={{ color:C.inkMuted, fontSize:13, marginBottom:16 }}>Vaste weekdag-pieken gelden elke week. Datum-specifieke pieken overschrijven voor die dag.</div>
+
+        {/* Vaste weekdag pieken */}
+        <div style={{ fontWeight:700, fontSize:13, color:C.inkMid, marginBottom:10 }}>VASTE WEEKDAG-PIEKEN</div>
+        {[
+          { day:'Vrijdag',  di:4, label:'Avond (17:00–sluit)', slots:4 },
+          { day:'Zaterdag', di:5, label:'Hele dag',            slots:7 },
+          { day:'Zondag',   di:6, label:'Middag (12:00–16:00)',slots:2 },
+        ].map(({ day, di, label, slots }) => {
+          const active = recurringPeaks[di] !== undefined
+          return (
+            <div key={di} style={{ display:'flex', alignItems:'center', justifyContent:'space-between',
+              padding:'10px 12px', background:active ? C.crimsonSoft : C.surfaceAlt,
+              borderRadius:10, marginBottom:6, border:`1px solid ${active ? C.crimson+'44' : C.border}` }}>
+              <div>
+                <div style={{ fontWeight:700, fontSize:13, color:active ? C.crimson : C.ink }}>
+                  {active ? '🔥' : '○'} {day}
+                </div>
+                <div style={{ color:C.inkMuted, fontSize:11 }}>{label}</div>
+              </div>
+              <button onClick={() => setRecurringPeaks(rp => {
+                const n = { ...rp }
+                if (active) delete n[di]
+                else n[di] = slots
+                return n
+              })} style={{ ...btn(),
+                background: active ? C.crimson : C.jade+'18',
+                color: active ? C.white : C.jade,
+                border: `1px solid ${active ? C.crimson : C.jade+'44'}`,
+                padding:'6px 14px', fontSize:12, borderRadius:9 }}>
+                {active ? 'Uitzetten' : 'Aanzetten'}
+              </button>
+            </div>
+          )
+        })}
+
+        {/* Datum-specifieke pieken */}
+        <div style={{ fontWeight:700, fontSize:13, color:C.inkMid, marginBottom:10, marginTop:16 }}>DATUM-SPECIFIEKE PIEKEN</div>
+        <div style={{ display:'flex', gap:8, marginBottom:12, flexWrap:'wrap' }}>
+          <input type="date" value={newPeak.date} onChange={e => setNewPeak(p => ({...p, date:e.target.value}))}
+            style={{ flex:1, padding:'9px 12px', borderRadius:10, border:`1px solid ${C.border}`, fontSize:13, minWidth:130 }}/>
+          <input type="text" value={newPeak.label} onChange={e => setNewPeak(p => ({...p, label:e.target.value}))}
+            placeholder="Omschrijving (bijv. Oud & Nieuw)"
+            style={{ flex:2, padding:'9px 12px', borderRadius:10, border:`1px solid ${C.border}`, fontSize:13, minWidth:150 }}/>
+          <button onClick={addPeak} style={{ ...btn(), background:C.crimson+'18', color:C.crimson,
+            border:`1px solid ${C.crimson}44`, padding:'9px 14px', fontSize:13, borderRadius:10 }}>＋ Datum toevoegen</button>
+        </div>
+        {peakMoments.length === 0 && <div style={{ color:C.inkMuted, fontSize:12, fontStyle:'italic' }}>Nog geen datum-specifieke pieken</div>}
+        {peakMoments.map(p => (
+          <div key={p.id} style={{ display:'flex', justifyContent:'space-between', alignItems:'center',
+            padding:'9px 12px', background:C.surfaceAlt, borderRadius:10, marginBottom:6 }}>
+            <div>
+              <div style={{ fontWeight:700, fontSize:13 }}>{p.label || 'Piek dag'}</div>
+              <div style={{ color:C.inkMuted, fontSize:11 }}>{p.date} · 🔥 +1 per afdeling</div>
+            </div>
+            <button onClick={async () => { await supabase.from('peak_moments').delete().eq('id', p.id); onReload(); show('Verwijderd') }}
+              style={{ ...btn(), background:C.crimsonSoft, color:C.crimson, padding:'5px 10px', fontSize:11, borderRadius:8 }}>✕</button>
+          </div>
+        ))}
+      </Card>
+
+      {/* Holidays */}
+      <Card style={{ padding:20 }}>
+        <div style={{ fontWeight:800, fontSize:15, marginBottom:4 }}>🎉 Feestdagen</div>
+        <div style={{ color:C.inkMuted, fontSize:13, marginBottom:16 }}>Feestdagen = 150% loonkosten. Stel in of gesloten of met aangepaste bezetting.</div>
+        <div style={{ display:'flex', gap:8, marginBottom:12, flexWrap:'wrap' }}>
+          <input type="date" value={newHoliday.date} onChange={e => setNewHoliday(h => ({...h, date:e.target.value}))}
+            style={{ flex:1, padding:'9px 12px', borderRadius:10, border:`1px solid ${C.border}`, fontSize:13, minWidth:130 }}/>
+          <input type="text" value={newHoliday.name} onChange={e => setNewHoliday(h => ({...h, name:e.target.value}))}
+            placeholder="Naam (bijv. Koningsdag)"
+            style={{ flex:2, padding:'9px 12px', borderRadius:10, border:`1px solid ${C.border}`, fontSize:13, minWidth:150 }}/>
+          <button onClick={() => setNewHoliday(h => ({...h, is_closed:!h.is_closed}))}
+            style={{ ...btn(), padding:'9px 12px', fontSize:12, borderRadius:10, flexShrink:0,
+              background:newHoliday.is_closed?C.crimson:C.jade, color:C.white }}>
+            {newHoliday.is_closed ? '🔒 Gesloten' : '📋 Open'}
+          </button>
+          <button onClick={addHoliday} style={{ ...btn(), background:C.jade+'18', color:C.jade,
+            border:`1px solid ${C.jade}44`, padding:'9px 14px', fontSize:13, borderRadius:10 }}>＋ Toevoegen</button>
+        </div>
+        {holidays.length === 0 && <div style={{ color:C.inkMuted, fontSize:12, fontStyle:'italic' }}>Nog geen feestdagen</div>}
+        {holidays.map(h => (
+          <div key={h.id} style={{ display:'flex', justifyContent:'space-between', alignItems:'center',
+            padding:'9px 12px', background:C.surfaceAlt, borderRadius:10, marginBottom:6 }}>
+            <div>
+              <div style={{ fontWeight:700, fontSize:13 }}>{h.name}</div>
+              <div style={{ display:'flex', alignItems:'center', gap:6, marginTop:2 }}>
+                <div style={{ color:C.inkMuted, fontSize:11 }}>{h.date} · 💶 150%</div>
+                <button onClick={async () => {
+                  await supabase.from('public_holidays').update({ is_closed: !h.is_closed }).eq('id', h.id)
+                  onReload()
+                }} style={{ ...btn(), padding:'2px 8px', fontSize:10, borderRadius:6,
+                  background:h.is_closed?C.crimson:C.jade, color:C.white }}>
+                  {h.is_closed ? '🔒 Gesloten' : '📋 Open'}
+                </button>
+              </div>
+            </div>
+            <button onClick={async () => { await supabase.from('public_holidays').delete().eq('id', h.id); onReload(); show('Verwijderd') }}
+              style={{ ...btn(), background:C.crimsonSoft, color:C.crimson, padding:'5px 10px', fontSize:11, borderRadius:8 }}>✕</button>
+          </div>
+        ))}
+      </Card>
+    </div>
+  )
+}
+
+function AanvragenTab({ pendingLeaves, pendingSwaps, onLeave, onSwap }) {
+  return (
+    <div style={{ display:'flex', flexDirection:'column', gap:14 }}>
+      <div style={{ fontWeight:900, fontSize:20, color:C.ink }}>Aanvragen</div>
+      {pendingLeaves.length === 0 && pendingSwaps.length === 0 && (
+        <Card style={{ textAlign:'center', padding:48 }}>
+          <div style={{ fontSize:36, marginBottom:8 }}>✅</div>
+          <div style={{ color:C.inkMuted }}>Geen openstaande aanvragen</div>
+        </Card>
+      )}
+      {pendingLeaves.map(l => (
+        <Card key={l.id} style={{ padding:'14px 16px' }}>
+          <div style={{ display:'flex', gap:10, alignItems:'center', marginBottom:12 }}>
+            <Avatar name={l.staff?.name || '?'} color={l.staff?.color || C.sky} size={38}/>
+            <div>
+              <div style={{ fontWeight:700, color:C.ink }}>{l.staff?.name}</div>
+              <div style={{ color:C.inkMuted, fontSize:13 }}>{l.date} — {l.reason}</div>
+            </div>
+          </div>
+          <div style={{ display:'flex', gap:8 }}>
+            <button onClick={() => onLeave(l.id, 'rejected')}
+              style={{ ...btn(), flex:1, background:C.crimsonSoft, color:C.crimson,
+                border:`1px solid ${C.crimson}33`, padding:'10px', borderRadius:10, fontSize:13 }}>✗ Afwijzen</button>
+            <button onClick={() => onLeave(l.id, 'approved')}
+              style={{ ...btn(), flex:2, background:C.jade, color:C.white, padding:'10px', borderRadius:10, fontSize:13 }}>✓ Goedkeuren</button>
+          </div>
+        </Card>
+      ))}
+      {pendingSwaps.map(sw => (
+        <Card key={sw.id} style={{ padding:'14px 16px' }}>
+          <div style={{ display:'flex', alignItems:'center', gap:10, marginBottom:12, flexWrap:'wrap' }}>
+            <Avatar name={sw.from_staff?.name || '?'} color={sw.from_staff?.color || C.sky} size={32}/>
+            <div><div style={{ fontWeight:700, fontSize:13 }}>{sw.from_staff?.name}</div><div style={{ color:C.inkMuted, fontSize:11 }}>{sw.from_date}</div></div>
+            <div style={{ fontSize:20, color:C.inkMuted }}>⇄</div>
+            <Avatar name={sw.to_staff?.name || '?'} color={sw.to_staff?.color || C.jade} size={32}/>
+            <div><div style={{ fontWeight:700, fontSize:13 }}>{sw.to_staff?.name}</div><div style={{ color:C.inkMuted, fontSize:11 }}>{sw.to_date}</div></div>
+          </div>
+          <div style={{ display:'flex', gap:8 }}>
+            <button onClick={() => onSwap(sw.id, 'rejected')}
+              style={{ ...btn(), flex:1, background:C.crimsonSoft, color:C.crimson,
+                border:`1px solid ${C.crimson}33`, padding:'10px', borderRadius:10, fontSize:13 }}>✗ Afwijzen</button>
+            <button onClick={() => onSwap(sw.id, 'approved')}
+              style={{ ...btn(), flex:2, background:C.jade, color:C.white, padding:'10px', borderRadius:10, fontSize:13 }}>✓ Goedkeuren</button>
+          </div>
+        </Card>
+      ))}
+    </div>
+  )
+}
+
+function PersoneelTab({ allStaff, capacities, orgId, onReload, show, shiftTemplates, currentSchedule, overtimeLog, availPatterns }) {
+  const [modal, setModal] = useState(false)
+  const [editId, setEditId] = useState(null)
+  const [capId, setCapId] = useState(null)
+  const [availId, setAvailId] = useState(null)
+  const [localScores, setLocalScores] = useState({})
+  // Sync localScores when capacities are loaded from DB
+  useEffect(() => { setLocalScores(capacities) }, [capacities])
+  const emptyForm = { name:'', email:'', password:'', role:'', color:'#1D4ED8',
+    contract_type:'vast', contract_hours:20, min_hours:8, max_hours:32, hourly_rate:12, depts:[],
+    pref_min_days:1, pref_max_days:5 }
+  const [form, setForm] = useState(emptyForm)
+
+  const f = (k, v) => setForm(p => ({ ...p, [k]: v }))
+
+  async function saveStaff() {
+    if (!form.name || !form.email || !form.depts.length) { show('Vul naam, e-mail en afdeling in'); return }
+    try {
+      if (editId) {
+        const { error: updErr } = await supabase.from('staff').update({
+          name:form.name, email:form.email, role:form.role, color:form.color,
+          contract_type:form.contract_type, contract_hours:form.contract_hours,
+          min_hours:form.min_hours, max_hours:form.max_hours,
+          hourly_rate:form.hourly_rate, depts:form.depts,
+          pref_min_days:form.pref_min_days||1, pref_max_days:form.pref_max_days||5,
+        }).eq('id', editId)
+        if (updErr) { show('Fout bij opslaan: ' + updErr.message); return }
+        show(`✓ ${form.name} bijgewerkt`)
+        setModal(false); setEditId(null); setForm(emptyForm)
+        onReload()
+        return // early return to skip the modal close below
+      } else {
+        // Create staff record only — auth account is created when employee logs in for the first time
+        // Do NOT use signUp here as it would log out the current admin session
+        await supabase.from('staff').insert({
+          org_id: orgId, auth_id: null,
+          name:form.name, email:form.email, role:form.role, color:form.color,
+          contract_type:form.contract_type, contract_hours:form.contract_hours,
+          min_hours:form.min_hours, max_hours:form.max_hours,
+          hourly_rate:form.hourly_rate, depts:form.depts, is_active:true,
+          pref_min_days:form.pref_min_days||1, pref_max_days:form.pref_max_days||5,
+        })
+        show(`✓ ${form.name} toegevoegd — wachtwoord: ${form.password||'(automatisch)'}`)
+      }
+      setModal(false); setEditId(null); setForm(emptyForm); onReload()
+    } catch (e) { show('Fout: ' + e.message) }
+  }
+
+  return (
+    <div style={{ display:'flex', flexDirection:'column', gap:14 }}>
+      <div style={{ display:'flex', justifyContent:'space-between', alignItems:'center' }}>
+        <div style={{ fontWeight:900, fontSize:20, color:C.ink }}>Personeel</div>
+        <button onClick={() => { setForm(emptyForm); setEditId(null); setModal(true) }}
+          style={{ ...btn(), background:C.ink, color:C.white, padding:'10px 18px', fontSize:13, borderRadius:11 }}>
+          ＋ Medewerker toevoegen
+        </button>
+      </div>
+
+      {allStaff.length === 0 && (
+        <Card style={{ textAlign:'center', padding:48 }}>
+          <div style={{ fontSize:40, marginBottom:12 }}>👥</div>
+          <div style={{ fontWeight:700, fontSize:16, color:C.ink, marginBottom:6 }}>Nog geen medewerkers</div>
+          <div style={{ color:C.inkMuted, fontSize:13, marginBottom:20 }}>Voeg je eerste medewerker toe</div>
+          <button onClick={() => { setForm(emptyForm); setModal(true) }}
+            style={{ ...btn(), background:C.ink, color:C.white, padding:'11px 22px', fontSize:14, borderRadius:11 }}>
+            ＋ Medewerker toevoegen
+          </button>
+        </Card>
+      )}
+
+      {/* Active staff */}
+      {allStaff.filter(s => s.is_active).map(s => {
+        const hrs = (currentSchedule[s.id] || []).reduce((a, sh) => {
+          if (!sh || !shiftTemplates[sh]) return a
+          const t = shiftTemplates[sh]
+          return a + (parseTime(t.end_time) - parseTime(t.start_time) - t.break_minutes) / 60
+        }, 0)
+        const ot = overtimeLog[s.id] || 0
+        const pct = Math.min(100, Math.round(hrs / (s.contract_hours || 20) * 100))
+        const contractMax = s.contract_type === 'min_max' ? s.max_hours : s.contract_hours
+
+        return (
+          <Card key={s.id} style={{ padding:16 }}>
+            <div style={{ display:'flex', gap:12, alignItems:'flex-start' }}>
+              <Avatar name={s.name} color={s.color} size={46}/>
+              <div style={{ flex:1 }}>
+                <div style={{ display:'flex', justifyContent:'space-between', alignItems:'flex-start', flexWrap:'wrap', gap:8 }}>
+                  <div>
+                    <div style={{ fontWeight:800, fontSize:15, color:C.ink }}>{s.name}</div>
+                    <div style={{ color:C.inkMuted, fontSize:12 }}>{s.role} · {s.email}</div>
+                    <div style={{ display:'flex', gap:4, marginTop:4, flexWrap:'wrap' }}>
+                      {s.depts?.map(d => <Badge key={d} color={DEPTS[d]?.color || C.sky} style={{ fontSize:9, padding:'2px 7px' }}>{DEPTS[d]?.icon} {DEPTS[d]?.label}</Badge>)}
+                      <Badge color={CONTRACT_TYPES[s.contract_type]?.color || C.jade} style={{ fontSize:9 }}>
+                        {CONTRACT_TYPES[s.contract_type]?.label}
+                      </Badge>
+                    </div>
+                  </div>
+                  <div style={{ textAlign:'right' }}>
+                    <div style={{ fontWeight:900, fontSize:15, color:C.gold }}>€{(s.hourly_rate || 0).toFixed(2)}/u</div>
+                    <div style={{ color:C.inkMuted, fontSize:11 }}>
+                      {hrs.toFixed(0)}u / {contractMax || 20}u
+                      {ot > 0 && <span style={{ color:C.amber, fontWeight:700 }}> · {ot.toFixed(1)}u OT</span>}
+                    </div>
+                  </div>
+                </div>
+                <div style={{ height:5, background:'#EBE7DE', borderRadius:99, overflow:'hidden', margin:'10px 0 6px' }}>
+                  <div style={{ height:'100%', width:`${pct}%`, background:pct>100?C.crimson:pct>85?C.amber:C.jade, borderRadius:99 }}/>
+                </div>
+                <div style={{ display:'flex', gap:8 }}>
+                  <button onClick={() => {
+                    setForm({ name:s.name, email:s.email, role:s.role||'', color:s.color,
+                      contract_type:s.contract_type, contract_hours:s.contract_hours,
+                      min_hours:s.min_hours||8, max_hours:s.max_hours||32,
+                      hourly_rate:s.hourly_rate, depts:s.depts||[], password:'',
+                      pref_min_days:s.pref_min_days||1, pref_max_days:s.pref_max_days||5 })
+                    setEditId(s.id); setModal(true)
+                  }} style={{ ...btn(), flex:1, background:'#EBE7DE', color:C.inkMid, padding:'7px', fontSize:12, borderRadius:9 }}>✏️ Bewerken</button>
+                  <button onClick={() => setCapId(capId===s.id?null:s.id)}
+                    style={{ ...btn(), flex:1, background:capId===s.id?C.ink:'#EBE7DE', color:capId===s.id?C.white:C.inkMid, padding:'7px', fontSize:12, borderRadius:9 }}>⭐ Capaciteit</button>
+                    <button onClick={() => setAvailId(availId===s.id?null:s.id)}
+                    style={{ ...btn(), flex:1, background:availId===s.id?C.sky:'#EBE7DE', color:availId===s.id?C.white:C.inkMid, padding:'7px', fontSize:12, borderRadius:9 }}>📅 Beschikbaar</button>
+                  <button onClick={async () => { await supabase.from('staff').update({ is_active:!s.is_active }).eq('id', s.id); onReload() }}
+                    style={{ ...btn(), flex:1, background:s.is_active?C.crimsonSoft:C.jadeSoft, color:s.is_active?C.crimson:C.jade, padding:'7px', fontSize:12, borderRadius:9 }}>
+                    {s.is_active ? 'Deactiveren' : 'Activeren'}
+                  </button>
+                  {!s.is_active && (
+                    <button onClick={async () => {
+                      if (!window.confirm(`Weet je zeker dat je ${s.name} permanent wilt verwijderen? Dit kan niet ongedaan worden gemaakt.`)) return
+                      await supabase.from('availability_patterns').delete().eq('staff_id', s.id)
+                      await supabase.from('capacity_scores').delete().eq('staff_id', s.id)
+                      await supabase.from('staff').delete().eq('id', s.id)
+                      onReload()
+                      show(`✓ ${s.name} verwijderd`)
+                    }} style={{ ...btn(), flex:1, background:C.crimson, color:C.white, padding:'7px', fontSize:12, borderRadius:9 }}>
+                      🗑 Verwijderen
+                    </button>
+                  )}
+                </div>
+
+                {capId === s.id && (
+                  <div style={{ marginTop:12, paddingTop:12, borderTop:`1px solid #EEE9E0` }}>
+                    <div style={{ fontWeight:700, fontSize:13, marginBottom:10, color:C.inkMid }}>Capaciteitsscores (1–10)</div>
+                    {(s.depts || []).map(dk => {
+                      const dept = DEPTS[dk]
+                      const score = (localScores[s.id]?.[dk] !== undefined ? localScores[s.id]?.[dk] : capacities[s.id]?.[dk]) ?? 5
+                      return (
+                        <div key={dk} style={{ marginBottom:10 }}>
+                          <div style={{ display:'flex', justifyContent:'space-between', marginBottom:4 }}>
+                            <span style={{ fontWeight:700, fontSize:13, color:dept?.color }}>{dept?.icon} {dept?.label}</span>
+                            <span style={{ fontWeight:800, color:score>=8?C.jade:score>=5?dept?.color:C.crimson }}>{score}/10</span>
+                          </div>
+                          <input type="range" min={1} max={10} value={score}
+                            onChange={e => {
+                              // Update local display only - no re-render of parent
+                              setLocalScores(ls => ({
+                                ...ls,
+                                [s.id]: { ...(ls[s.id]||{}), [dk]: +e.target.value }
+                              }))
+                            }}
+                            onMouseUp={async e => {
+                              const val = +e.target.value
+                              // Update local capacities display
+                              setLocalScores(ls => ({
+                                ...ls,
+                                [s.id]: { ...(ls[s.id]||{}), [dk]: val }
+                              }))
+                              // Save to DB without triggering full reload
+                              const { error: capErr } = await supabase.from('capacity_scores').upsert({
+                                staff_id:s.id, dept:dk, score:val
+                              }, { onConflict:'staff_id,dept' })
+                              if (capErr) show('Fout: ' + capErr.message)
+                              else show('✓ Score opgeslagen')
+                            }}
+                            onTouchEnd={async e => {
+                              const val = localScores[s.id]?.[dk] ?? capacities[s.id]?.[dk] ?? 5
+                              await supabase.from('capacity_scores').upsert({
+                                staff_id:s.id, dept:dk, score:val
+                              }, { onConflict:'staff_id,dept' })
+                              show('✓ Score opgeslagen')
+                            }}
+                            style={{ width:'100%', accentColor:dept?.color, cursor:'pointer', height:6 }}/>
+                        </div>
+                      )
+                    })}
+                  </div>
+                )}
+                {availId === s.id && (
+                  <div style={{ marginTop:12, paddingTop:12, borderTop:`1px solid #EEE9E0` }}>
+                    
+                    {/* Contract info */}
+                    <div style={{ display:'flex', gap:8, flexWrap:'wrap', marginBottom:12 }}>
+                      <div style={{ background:C.surfaceAlt, borderRadius:8, padding:'6px 12px', fontSize:12 }}>
+                        <span style={{ color:C.inkMuted }}>Contract: </span>
+                        <span style={{ fontWeight:700, color:C.ink }}>{CONTRACT_TYPES[s.contract_type]?.label || s.contract_type}</span>
+                      </div>
+                      <div style={{ background:C.surfaceAlt, borderRadius:8, padding:'6px 12px', fontSize:12 }}>
+                        <span style={{ color:C.inkMuted }}>Uren: </span>
+                        <span style={{ fontWeight:700, color:C.ink }}>{s.contract_hours || '—'} u/week</span>
+                      </div>
+                      <div style={{ background:C.surfaceAlt, borderRadius:8, padding:'6px 12px', fontSize:12 }}>
+                        <span style={{ color:C.inkMuted }}>Voorkeur: </span>
+                        <span style={{ fontWeight:700, color:C.ink }}>{s.pref_min_days || '—'}–{s.pref_max_days || '—'} dagen</span>
+                      </div>
+                      {(() => {
+                        const availDays = [0,1,2,3,4,5,6].filter(di => (availPatterns[s.id]?.[di] ?? 0) > 0).length
+                        return (
+                          <div style={{ background:C.jadeSoft, borderRadius:8, padding:'6px 12px', fontSize:12 }}>
+                            <span style={{ color:C.inkMuted }}>Beschikbaar: </span>
+                            <span style={{ fontWeight:700, color:C.jade }}>{availDays} dagen/week</span>
+                          </div>
+                        )
+                      })()}
+                    </div>
+
+                    {/* Weekly availability grid */}
+                    <div style={{ fontWeight:700, fontSize:12, marginBottom:8, color:C.inkMid }}>Beschikbaarheid per dag</div>
+                    <div style={{ display:'grid', gridTemplateColumns:'repeat(7,1fr)', gap:4 }}>
+                      {['Ma','Di','Wo','Do','Vr','Za','Zo'].map((d, di) => {
+                        const bits = availPatterns[s.id]?.[di] ?? null
+                        const daySlots = bits === null ? [] : [
+                          { label:'Ochtend', short:'O', bit:1 },
+                          { label:'Middag', short:'M', bit:2 },
+                          { label:'Avond', short:'A', bit:4 },
+                        ].filter(sl => bits & sl.bit)
+                        const isFullDay = bits === 7
+                        const isUnavail = bits === 0
+                        const isUnset = bits === null
+                        return (
+                          <div key={d} style={{ textAlign:'center' }}>
+                            <div style={{ fontSize:10, fontWeight:700, color:C.inkMuted, marginBottom:4 }}>{d}</div>
+                            <div style={{ padding:'6px 2px', borderRadius:8, fontSize:9, fontWeight:700,
+                              background: isUnset ? C.surfaceAlt : isUnavail ? C.crimsonSoft : isFullDay ? C.jadeSoft : C.amberSoft,
+                              color: isUnset ? C.inkMuted : isUnavail ? C.crimson : isFullDay ? C.jade : C.amber,
+                              border: `1px solid ${isUnset ? C.border : isUnavail ? C.crimson+'44' : isFullDay ? C.jade+'44' : C.amber+'44'}`,
+                              minHeight:40, display:'flex', flexDirection:'column', alignItems:'center', justifyContent:'center', gap:2 }}>
+                              {isUnset && <span>–</span>}
+                              {isUnavail && <span>✗</span>}
+                              {!isUnset && !isUnavail && daySlots.map(sl => (
+                                <span key={sl.short}>{sl.short}</span>
+                              ))}
+                            </div>
+                          </div>
+                        )
+                      })}
+                    </div>
+                    <div style={{ display:'flex', gap:10, marginTop:8, fontSize:10, flexWrap:'wrap' }}>
+                      <span><span style={{ color:C.jade }}>■</span> Hele dag</span>
+                      <span><span style={{ color:C.amber }}>■</span> Gedeeltelijk</span>
+                      <span><span style={{ color:C.crimson }}>■</span> Niet beschikbaar</span>
+                      <span><span style={{ color:C.inkMuted }}>■</span> Niet ingevuld</span>
+                      <span style={{ color:C.inkMuted }}>O=Ochtend M=Middag A=Avond</span>
+                    </div>
+                  </div>
+                )}
+              </div>
+            </div>
+          </Card>
+        )
+      })}
+
+      {/* Staff modal */}
+      {modal && (
+        <div style={{ position:'fixed', inset:0, background:'rgba(0,0,0,.45)', display:'flex',
+          alignItems:'center', justifyContent:'center', zIndex:999, padding:16 }}
+          onClick={() => setModal(false)}>
+          <div style={{ background:C.surface, borderRadius:20, padding:24, width:'100%', maxWidth:480,
+            maxHeight:'90vh', overflowY:'auto' }}
+            onClick={e => e.stopPropagation()}>
+            <div style={{ fontWeight:800, fontSize:18, marginBottom:18 }}>
+              {editId ? 'Medewerker bewerken' : 'Nieuwe medewerker'}
+            </div>
+            {[['Volledige naam *','name','text','Voor- en achternaam'],['E-mailadres *','email','email','naam@restaurant.nl'],
+              ['Functie','role','text','Bijv. Barista, Kok...']].map(([l,k,t,p]) => (
+              <div key={k} style={{ marginBottom:14 }}>
+                <div style={{ fontSize:12, fontWeight:700, color:C.inkMid, marginBottom:5 }}>{l}</div>
+                <input type={t} value={form[k]} onChange={e => f(k, e.target.value)} placeholder={p}
+                  style={{ width:'100%', padding:'10px 12px', borderRadius:10, border:`1px solid ${C.border}`,
+                    fontSize:14, fontFamily:'inherit', color:C.ink, boxSizing:'border-box' }}/>
+              </div>
+            ))}
+            {!editId && (
+              <div style={{ marginBottom:14 }}>
+                <div style={{ fontSize:12, fontWeight:700, color:C.inkMid, marginBottom:5 }}>Tijdelijk wachtwoord *</div>
+                <input type="password" value={form.password} onChange={e => f('password', e.target.value)}
+                  placeholder="Medewerker kan dit zelf wijzigen"
+                  style={{ width:'100%', padding:'10px 12px', borderRadius:10, border:`1px solid ${C.border}`,
+                    fontSize:14, fontFamily:'inherit', color:C.ink, boxSizing:'border-box' }}/>
+              </div>
+            )}
+            <div style={{ display:'grid', gridTemplateColumns:'1fr 1fr', gap:10, marginBottom:14 }}>
+              <div>
+                <div style={{ fontSize:12, fontWeight:700, color:C.inkMid, marginBottom:5 }}>Contracttype</div>
+                <select value={form.contract_type} onChange={e => f('contract_type', e.target.value)}
+                  style={{ width:'100%', padding:'10px 12px', borderRadius:10, border:`1px solid ${C.border}`, fontSize:14 }}>
+                  {Object.entries(CONTRACT_TYPES).map(([k,v]) => <option key={k} value={k}>{v.label}</option>)}
+                </select>
+              </div>
+              <div>
+                <div style={{ fontSize:12, fontWeight:700, color:C.inkMid, marginBottom:5 }}>
+                  {form.contract_type === 'min_max' ? 'Min uren/week' : 'Contract uren/week'}
+                </div>
+                <input type="number" value={form.contract_hours} onChange={e => f('contract_hours', +e.target.value)}
+                  min={0} max={40} step={1}
+                  style={{ width:'100%', padding:'10px 12px', borderRadius:10, border:`1px solid ${C.border}`, fontSize:14, boxSizing:'border-box' }}/>
+              </div>
+            </div>
+            {form.contract_type === 'min_max' && (
+              <div style={{ marginBottom:14 }}>
+                <div style={{ fontSize:12, fontWeight:700, color:C.inkMid, marginBottom:5 }}>Max uren/week</div>
+                <input type="number" value={form.max_hours} onChange={e => f('max_hours', +e.target.value)}
+                  min={0} max={60} step={1}
+                  style={{ width:'100%', padding:'10px 12px', borderRadius:10, border:`1px solid ${C.border}`, fontSize:14, boxSizing:'border-box' }}/>
+              </div>
+            )}
+            <div style={{ marginBottom:14 }}>
+              <div style={{ fontSize:12, fontWeight:700, color:C.inkMid, marginBottom:5 }}>Uurloon (€) — alleen admin</div>
+              <input type="number" value={form.hourly_rate} onChange={e => f('hourly_rate', +e.target.value)}
+                min={8} max={50} step={0.25}
+                style={{ width:'100%', padding:'10px 12px', borderRadius:10, border:`1px solid ${C.border}`, fontSize:14, boxSizing:'border-box' }}/>
+            </div>
+            {editId && <div style={{ marginBottom:14 }}>
+              <div style={{ fontSize:12, fontWeight:700, color:C.inkMid, marginBottom:5 }}>Nieuw wachtwoord instellen</div>
+              <div style={{ display:'flex', gap:8 }}>
+                <input type="password" value={form.password||''} onChange={e => setForm(f=>({...f,password:e.target.value}))}
+                  placeholder="Laat leeg om niet te wijzigen"
+                  style={{ flex:1, padding:'10px 12px', borderRadius:10, border:`1px solid ${C.border}`,
+                    fontSize:14, fontFamily:'inherit', color:C.ink, boxSizing:'border-box' }}/>
+              </div>
+              <div style={{ fontSize:11, color:C.inkMuted, marginTop:4 }}>Vul een nieuw wachtwoord in en klik Opslaan om het bij te werken</div>
+            </div>}
+            <div style={{ marginBottom:14 }}>
+              <div style={{ fontSize:12, fontWeight:700, color:C.inkMid, marginBottom:8 }}>Voorkeur werkdagen per week</div>
+              <div style={{ display:'flex', gap:10, alignItems:'center' }}>
+                <div style={{ flex:1 }}>
+                  <div style={{ fontSize:11, color:C.inkMuted, marginBottom:4 }}>Minimum</div>
+                  <div style={{ display:'flex', alignItems:'center', gap:6, background:'#EBE7DE', borderRadius:8, padding:'4px 8px' }}>
+                    <button onClick={() => setForm(f=>({...f,pref_min_days:Math.max(1,(f.pref_min_days||1)-1)}))}
+                      style={{ ...btn(), background:'transparent', color:C.ink, padding:'0 6px', fontSize:16 }}>−</button>
+                    <span style={{ fontWeight:800, fontSize:15, minWidth:20, textAlign:'center' }}>{form.pref_min_days||1}</span>
+                    <button onClick={() => setForm(f=>({...f,pref_min_days:Math.min(f.pref_max_days||5,(f.pref_min_days||1)+1)}))}
+                      style={{ ...btn(), background:'transparent', color:C.ink, padding:'0 6px', fontSize:16 }}>＋</button>
+                  </div>
+                </div>
+                <div style={{ color:C.inkMuted, fontSize:18, paddingTop:16 }}>–</div>
+                <div style={{ flex:1 }}>
+                  <div style={{ fontSize:11, color:C.inkMuted, marginBottom:4 }}>Maximum</div>
+                  <div style={{ display:'flex', alignItems:'center', gap:6, background:'#EBE7DE', borderRadius:8, padding:'4px 8px' }}>
+                    <button onClick={() => setForm(f=>({...f,pref_max_days:Math.max(f.pref_min_days||1,(f.pref_max_days||5)-1)}))}
+                      style={{ ...btn(), background:'transparent', color:C.ink, padding:'0 6px', fontSize:16 }}>−</button>
+                    <span style={{ fontWeight:800, fontSize:15, minWidth:20, textAlign:'center' }}>{form.pref_max_days||5}</span>
+                    <button onClick={() => setForm(f=>({...f,pref_max_days:Math.min(7,(f.pref_max_days||5)+1)}))}
+                      style={{ ...btn(), background:'transparent', color:C.ink, padding:'0 6px', fontSize:16 }}>＋</button>
+                  </div>
+                </div>
+              </div>
+              <div style={{ fontSize:11, color:C.inkMuted, marginTop:6 }}>Zachte regel — generator probeert dit te respecteren</div>
+            </div>
+            <div style={{ marginBottom:14 }}>
+              <div style={{ fontSize:12, fontWeight:700, color:C.inkMid, marginBottom:8 }}>Afdelingen *</div>
+              <div style={{ display:'flex', gap:6, flexWrap:'wrap' }}>
+                {DEPT_KEYS.map(dk => {
+                  const dept = DEPTS[dk], active = form.depts.includes(dk)
+                  return (
+                    <button key={dk} onClick={() => f('depts', active ? form.depts.filter(d=>d!==dk) : [...form.depts, dk])}
+                      style={{ ...btn(), padding:'8px 12px', fontSize:12, borderRadius:9,
+                        background:active?dept.color+'18':'transparent',
+                        border:`1.5px solid ${active?dept.color:C.border}`,
+                        color:active?dept.color:C.inkMuted, fontWeight:active?700:500 }}>
+                      {dept.icon} {dept.label}
+                    </button>
+                  )
+                })}
+              </div>
+            </div>
+            <div style={{ marginBottom:16 }}>
+              <div style={{ fontSize:12, fontWeight:700, color:C.inkMid, marginBottom:8 }}>Profielkleur</div>
+              <div style={{ display:'flex', gap:6, flexWrap:'wrap' }}>
+                {['#1D4ED8','#2A7D5C','#B84C2C','#C4882A','#5E30A0','#0A7B8A','#A8281C','#A0620A'].map(c => (
+                  <div key={c} onClick={() => f('color', c)}
+                    style={{ width:28, height:28, borderRadius:8, background:c, cursor:'pointer',
+                      border:`3px solid ${form.color===c?C.ink:'transparent'}`, transition:'all .15s' }}/>
+                ))}
+              </div>
+            </div>
+            <div style={{ display:'flex', gap:10 }}>
+              <button onClick={() => setModal(false)}
+                style={{ ...btn(), flex:1, background:'#EBE7DE', color:C.inkMid, padding:'13px', borderRadius:12 }}>Annuleren</button>
+              <button onClick={saveStaff}
+                style={{ ...btn(), flex:2, background:C.ink, color:C.white, padding:'13px', borderRadius:12 }}>
+                {editId ? 'Opslaan' : 'Aanmaken'}
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {(() => {
+        const deactStaff = allStaff.filter(s => s.is_active === false || s.is_active === 'false' || s.is_active === 0)
+        if (!deactStaff.length) return null
+        return (
+        <div style={{ marginTop:8 }}>
+          <div style={{ fontSize:12, fontWeight:700, color:C.inkMuted, marginBottom:8, paddingTop:8,
+            borderTop:`1px solid ${C.border}` }}>
+            Gedeactiveerd personeel ({deactStaff.length})
+          </div>
+          {deactStaff.map(s => (
+            <Card key={s.id} style={{ padding:'12px 14px', marginBottom:6, opacity:0.6,
+              border:`1px solid ${C.border}` }}>
+              <div style={{ display:'flex', alignItems:'center', gap:10, justifyContent:'space-between' }}>
+                <div style={{ display:'flex', alignItems:'center', gap:10 }}>
+                  <div style={{ width:32, height:32, borderRadius:99, background:s.color+'33',
+                    display:'flex', alignItems:'center', justifyContent:'center',
+                    fontSize:13, fontWeight:700, color:s.color }}>
+                    {s.name?.split(' ').map(w=>w[0]).join('').slice(0,2).toUpperCase()}
+                  </div>
+                  <div>
+                    <div style={{ fontWeight:700, fontSize:13, color:C.inkMuted }}>{s.name}</div>
+                    <div style={{ fontSize:11, color:C.inkMuted }}>{s.email}</div>
+                  </div>
+                </div>
+                <div style={{ display:'flex', gap:6 }}>
+                  <button onClick={async () => {
+                    await supabase.from('staff').update({ is_active:true }).eq('id', s.id)
+                    onReload(); show(`✓ ${s.name} geactiveerd`)
+                  }} style={{ ...btn(), background:C.jadeSoft, color:C.jade,
+                    padding:'6px 12px', fontSize:12, borderRadius:8 }}>Activeren</button>
+                  <button onClick={async () => {
+                    if (!window.confirm(`${s.name} permanent verwijderen?`)) return
+                    await supabase.from('availability_patterns').delete().eq('staff_id', s.id)
+                    await supabase.from('capacity_scores').delete().eq('staff_id', s.id)
+                    await supabase.from('staff').delete().eq('id', s.id)
+                    onReload(); show(`✓ ${s.name} verwijderd`)
+                  }} style={{ ...btn(), background:C.crimson, color:C.white,
+                    padding:'6px 12px', fontSize:12, borderRadius:8 }}>🗑 Verwijderen</button>
+                </div>
+              </div>
+            </Card>
+          ))}
+        </div>
+        )
+      })()}
+    </div>
+  )
+}
+
+function ZiekteTab({ allStaff, currentSchedule, currentWeek, shiftTemplates, orgId, onReload, show }) {
+  const [openShifts, setOpenShifts] = useState([])
+  const [sickModal, setSickModal] = useState(false)
+  const [sickForm, setSickForm] = useState({ staffId:'', di:0 })
+  const [claimModal, setClaimModal] = useState(null)
+
+  useEffect(() => { loadOpenShifts() }, [currentWeek.monday])
+
+  async function loadOpenShifts() {
+    const { data } = await supabase.from('open_shifts')
+      .select('*, claimed_by:staff!claimed_by_id(name,color)')
+      .eq('org_id', orgId)
+      .gte('date', currentWeek.dates[0])
+      .lte('date', currentWeek.dates[6])
+    setOpenShifts(data || [])
+  }
+
+  async function reportSick() {
+    const s = allStaff.find(x => x.id === sickForm.staffId)
+    if (!s) return
+    const date = currentWeek.dates[sickForm.di]
+    const shiftName = currentSchedule[sickForm.staffId]?.[sickForm.di]
+    // Remove from roster
+    const { data: roster } = await supabase.from('rosters')
+      .select('id').eq('org_id', orgId).eq('week_start', currentWeek.monday).single()
+    if (roster) {
+      await supabase.from('roster_assignments').delete()
+        .eq('roster_id', roster.id).eq('staff_id', sickForm.staffId).eq('date', date)
+    }
+    // Create open shift
+    await supabase.from('open_shifts').insert({
+      org_id: orgId, date, shift_name: shiftName,
+      original_staff_id: sickForm.staffId, status: 'open'
+    })
+    setSickModal(false); onReload(); loadOpenShifts()
+    show(`✓ ${s.name} ziekgemeld — dienst staat open voor collega's`)
+  }
+
+  async function approveClaimShift(openShiftId, staffId) {
+    const os = openShifts.find(x => x.id === openShiftId)
+    if (!os) return
+    // Assign to new staff
+    const { data: roster } = await supabase.from('rosters')
+      .select('id').eq('org_id', orgId).eq('week_start', currentWeek.monday).single()
+    if (roster) {
+      await supabase.from('roster_assignments').upsert({
+        roster_id: roster.id, staff_id: staffId,
+        date: os.date, shift_name: os.shift_name
+      }, { onConflict: 'roster_id,staff_id,date' })
+    }
+    await supabase.from('open_shifts').update({ status:'filled', claimed_by_id: staffId }).eq('id', openShiftId)
+    setClaimModal(null); onReload(); loadOpenShifts()
+    show('✓ Dienst toegewezen!')
+  }
+
+  const scheduledStaff = allStaff.filter(s => 
+    currentSchedule[s.id]?.some(sh => sh !== null)
+  )
+
+  return (
+    <div style={{ display:'flex', flexDirection:'column', gap:14 }}>
+      <div style={{ display:'flex', justifyContent:'space-between', alignItems:'center', flexWrap:'wrap', gap:10 }}>
+        <div style={{ fontWeight:900, fontSize:20, color:C.ink }}>🤒 Ziekte & Open diensten</div>
+        <button onClick={() => setSickModal(true)}
+          style={{ ...btn(), background:C.crimson, color:C.white, padding:'10px 18px', fontSize:13, borderRadius:11 }}>
+          🤒 Medewerker ziekmelden
+        </button>
+      </div>
+
+      {/* Open shifts */}
+      {openShifts.length === 0
+        ? <Card style={{ textAlign:'center', padding:40 }}>
+            <div style={{ fontSize:36, marginBottom:8 }}>✅</div>
+            <div style={{ color:C.inkMuted }}>Geen open diensten deze week</div>
+          </Card>
+        : openShifts.map(os => {
+          const origStaff = allStaff.find(s => s.id === os.original_staff_id)
+          const shift = shiftTemplates[os.shift_name]
+          const available = allStaff.filter(s => 
+            s.id !== os.original_staff_id && !currentSchedule[s.id]?.[currentWeek.dates.indexOf(os.date)]
+          )
+          return (
+            <Card key={os.id} style={{ padding:'14px 16px', border:`1px solid ${os.status==='filled'?C.jade:C.crimson}44`,
+              background:os.status==='filled'?C.jadeSoft:C.crimsonSoft }}>
+              <div style={{ display:'flex', justifyContent:'space-between', alignItems:'flex-start', flexWrap:'wrap', gap:8 }}>
+                <div>
+                  <div style={{ display:'flex', alignItems:'center', gap:8, marginBottom:4 }}>
+                    <Badge color={os.status==='filled'?C.jade:C.crimson}>
+                      {os.status==='filled'?'✓ Ingevuld':'🔓 Open'}
+                    </Badge>
+                    <span style={{ fontWeight:700, color:C.ink }}>{os.date}</span>
+                    <span style={{ color:C.inkMuted, fontSize:12 }}>{os.shift_name} {shift?`(${shift.start_time}–${shift.end_time})`:''}</span>
+                  </div>
+                  {origStaff && <div style={{ color:C.inkMuted, fontSize:12 }}>
+                    Origineel: {origStaff.name} — ziek
+                  </div>}
+                  {os.status==='filled' && os.claimed_by && <div style={{ color:C.jade, fontSize:12, fontWeight:600 }}>
+                    Overgenomen door: {os.claimed_by.name}
+                  </div>}
+                </div>
+                {os.status === 'open' && (
+                  <button onClick={() => setClaimModal(os)}
+                    style={{ ...btn(), background:C.jade, color:C.white, padding:'8px 16px', fontSize:13, borderRadius:10 }}>
+                    Toewijzen aan collega
+                  </button>
+                )}
+              </div>
+            </Card>
+          )
+        })
+      }
+
+      {/* Sick report modal */}
+      {sickModal && (
+        <div style={{ position:'fixed', inset:0, background:'rgba(0,0,0,.45)', display:'flex', alignItems:'center', justifyContent:'center', zIndex:999, padding:16 }} onClick={() => setSickModal(false)}>
+          <div style={{ background:C.surface, borderRadius:20, padding:24, width:'100%', maxWidth:400 }} onClick={e=>e.stopPropagation()}>
+            <div style={{ fontWeight:800, fontSize:18, marginBottom:18 }}>🤒 Medewerker ziekmelden</div>
+            <div style={{ marginBottom:14 }}>
+              <div style={{ fontSize:12, fontWeight:700, color:C.inkMid, marginBottom:5 }}>Medewerker</div>
+              <select value={sickForm.staffId} onChange={e => setSickForm(f=>({...f,staffId:e.target.value}))}
+                style={{ width:'100%', padding:'10px 12px', borderRadius:10, border:`1px solid ${C.border}`, fontSize:14, color:C.ink }}>
+                <option value="">Kies medewerker</option>
+                {scheduledStaff.map(s => <option key={s.id} value={s.id}>{s.name}</option>)}
+              </select>
+            </div>
+            <div style={{ marginBottom:20 }}>
+              <div style={{ fontSize:12, fontWeight:700, color:C.inkMid, marginBottom:5 }}>Dag</div>
+              <select value={sickForm.di} onChange={e => setSickForm(f=>({...f,di:+e.target.value}))}
+                style={{ width:'100%', padding:'10px 12px', borderRadius:10, border:`1px solid ${C.border}`, fontSize:14, color:C.ink }}>
+                {DAYS_FULL.map((d, i) => {
+                  const sh = sickForm.staffId ? currentSchedule[sickForm.staffId]?.[i] : null
+                  return <option key={i} value={i}>{d} {sh?`— ${sh}`:'(vrij)'}</option>
+                })}
+              </select>
+            </div>
+            <div style={{ display:'flex', gap:10 }}>
+              <button onClick={() => setSickModal(false)} style={{ ...btn(), flex:1, background:'#EBE7DE', color:C.inkMid, padding:'12px', borderRadius:12 }}>Annuleren</button>
+              <button onClick={reportSick} disabled={!sickForm.staffId}
+                style={{ ...btn(), flex:2, background:C.crimson, color:C.white, padding:'12px', borderRadius:12 }}>
+                🤒 Ziekmelden & dienst openzetten
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* Claim/assign modal */}
+      {claimModal && (
+        <div style={{ position:'fixed', inset:0, background:'rgba(0,0,0,.45)', display:'flex', alignItems:'center', justifyContent:'center', zIndex:999, padding:16 }} onClick={() => setClaimModal(null)}>
+          <div style={{ background:C.surface, borderRadius:20, padding:24, width:'100%', maxWidth:400 }} onClick={e=>e.stopPropagation()}>
+            <div style={{ fontWeight:800, fontSize:18, marginBottom:4 }}>Dienst toewijzen</div>
+            <div style={{ color:C.inkMuted, fontSize:13, marginBottom:18 }}>
+              {claimModal.date} — {claimModal.shift_name}
+            </div>
+            <div style={{ display:'flex', flexDirection:'column', gap:8, marginBottom:16 }}>
+              {allStaff.filter(s => s.id !== claimModal.original_staff_id && s.is_active).map(s => (
+                <button key={s.id} onClick={() => approveClaimShift(claimModal.id, s.id)}
+                  style={{ ...btn(), display:'flex', alignItems:'center', gap:10, padding:'10px 14px',
+                    background:C.surfaceAlt, border:`1px solid ${C.border}`, borderRadius:12, textAlign:'left' }}>
+                  <Avatar name={s.name} color={s.color} size={32}/>
+                  <div>
+                    <div style={{ fontWeight:700, fontSize:13, color:C.ink }}>{s.name}</div>
+                    <div style={{ color:C.inkMuted, fontSize:11 }}>{s.depts?.map(d=>DEPTS[d]?.label).join(', ')}</div>
+                  </div>
+                </button>
+              ))}
+            </div>
+            <button onClick={() => setClaimModal(null)} style={{ ...btn(), width:'100%', background:'#EBE7DE', color:C.inkMid, padding:'12px', borderRadius:12 }}>Annuleren</button>
+          </div>
+        </div>
+      )}
+
+      {/* Gedeactiveerd personeel */}
+    </div>
+  )
+}
+
+function FinancieelTab({ fin, allStaff, currentSchedule, shiftTemplates, currentWeek, weekIdx, weeks, setWeekIdx, DAYS }) {
+  const maxCost = Math.max(...fin.rows.map(r => r.cost), 1)
+  const maxDay = Math.max(...DAYS.map((_, di) => {
+    return allStaff.filter(s => s.is_active && currentSchedule[s.id]?.[di]).reduce((a, s) => {
+      const sh = currentSchedule[s.id]?.[di]
+      const t = sh && shiftTemplates[sh]
+      return a + (t ? (parseTime(t.end_time) - parseTime(t.start_time) - t.break_minutes) / 60 * s.hourly_rate : 0)
+    }, 0)
+  }), 1)
+
+  return (
+    <div style={{ display:'flex', flexDirection:'column', gap:16 }}>
+      <div style={{ display:'flex', justifyContent:'space-between', alignItems:'center', flexWrap:'wrap', gap:10 }}>
+        <div style={{ fontWeight:900, fontSize:22, color:C.ink }}>Financieel</div>
+        <WeekNav week={weekIdx} weeks={weeks.map(w=>w.label)} setWeek={setWeekIdx} />
+      </div>
+
+      <div style={{ display:'grid', gridTemplateColumns:'repeat(auto-fill,minmax(150px,1fr))', gap:10 }}>
+        {[
+          { l:'Loonkosten', v:`€${fin.totalCost.toFixed(0)}`, icon:'💶', c:C.terra },
+          { l:'Totaal uren', v:`${fin.totalHours.toFixed(0)}u`, icon:'⏱', c:C.sky },
+          { l:'Overwerk', v:`${fin.totalOT.toFixed(1)}u`, icon:'⚠️', c:fin.totalOT>0?C.amber:C.jade },
+          { l:'Feestdag uren', v:`${fin.totalFestHours.toFixed(0)}u`, icon:'🎉', c:fin.totalFestHours>0?C.crimson:C.jade },
+        ].map(s => (
+          <Card key={s.l} style={{ padding:'14px 16px' }}>
+            <div style={{ fontSize:22, marginBottom:6 }}>{s.icon}</div>
+            <div style={{ color:s.c, fontSize:20, fontWeight:900 }}>{s.v}</div>
+            <div style={{ color:C.inkMuted, fontSize:11, marginTop:2 }}>{s.l}</div>
+          </Card>
+        ))}
+      </div>
+
+      {fin.totalOT > 0 && (
+        <div style={{ background:C.amberSoft, border:`1px solid ${C.amber}44`, borderRadius:12, padding:'10px 16px', display:'flex', gap:8, alignItems:'center' }}>
+          <span style={{ fontSize:18 }}>⚠️</span>
+          <div>
+            <div style={{ fontWeight:700, color:C.amber, fontSize:13 }}>Overwerk gedetecteerd</div>
+            <div style={{ color:C.inkMuted, fontSize:12 }}>{fin.totalOT.toFixed(1)}u overwerk × 1.5 = €{fin.rows.reduce((a,r)=>a+Math.max(0,r.otHours-r.festHours)*r.hourlyRate*0.5,0).toFixed(2)} extra</div>
+          </div>
+        </div>
+      )}
+
+      {fin.totalFestHours > 0 && (
+        <div style={{ background:C.crimsonSoft, border:`1px solid ${C.crimson}44`, borderRadius:12, padding:'10px 16px', display:'flex', gap:8, alignItems:'center' }}>
+          <span style={{ fontSize:18 }}>🎉</span>
+          <div>
+            <div style={{ fontWeight:700, color:C.crimson, fontSize:13 }}>Feestdagtoeslag (150%)</div>
+            <div style={{ color:C.inkMuted, fontSize:12 }}>{fin.totalFestHours.toFixed(0)}u × 1.5 = €{fin.rows.reduce((a,r)=>a+r.festHours*r.hourlyRate*0.5,0).toFixed(2)} toeslag</div>
+          </div>
+        </div>
+      )}
+
+      <Card style={{ padding:20 }}>
+        <div style={{ fontWeight:700, fontSize:14, color:C.inkMid, marginBottom:14 }}>LOONKOSTEN PER MEDEWERKER</div>
+        {fin.rows.length === 0 && <div style={{ color:C.inkMuted, fontSize:13, fontStyle:'italic' }}>Geen medewerkers ingeroosterd</div>}
+        {fin.rows.sort((a,b)=>b.cost-a.cost).map(r => (
+          <div key={r.id} style={{ marginBottom:14 }}>
+            <div style={{ display:'flex', alignItems:'center', gap:10, marginBottom:5 }}>
+              <Avatar name={r.name} color={r.color} size={28}/>
+              <div style={{ flex:1 }}>
+                <div style={{ display:'flex', justifyContent:'space-between', alignItems:'baseline' }}>
+                  <span style={{ fontWeight:700, fontSize:13, color:C.ink }}>{r.name.split(' ')[0]}</span>
+                  <div style={{ textAlign:'right' }}>
+                    <span style={{ fontWeight:900, color:C.terra, fontSize:14 }}>€{r.cost.toFixed(2)}</span>
+                    <span style={{ color:C.inkMuted, fontSize:11, marginLeft:6 }}>{r.hours.toFixed(0)}u × €{r.hourlyRate}/u</span>
+                  </div>
+                </div>
+              </div>
+            </div>
+            <div style={{ height:7, background:'#EBE7DE', borderRadius:99, overflow:'hidden' }}>
+              <div style={{ height:'100%', width:`${(r.cost/maxCost)*100}%`, background:r.otHours>0?C.amber:r.color, borderRadius:99 }}/>
+            </div>
+            {r.otHours > 0 && <div style={{ fontSize:11, color:C.amber, marginTop:3 }}>⚠ {r.otHours.toFixed(1)}u OT</div>}
+            {r.festHours > 0 && <div style={{ fontSize:11, color:C.crimson, marginTop:2 }}>🎉 {r.festHours.toFixed(1)}u feestdag (€{(r.festHours*r.hourlyRate*0.5).toFixed(2)} toeslag)</div>}
+          </div>
+        ))}
+        <div style={{ borderTop:`1px solid ${C.border}`, paddingTop:12, display:'flex', justifyContent:'space-between' }}>
+          <span style={{ fontWeight:700, color:C.ink }}>Totaal</span>
+          <span style={{ fontWeight:900, color:C.terra, fontSize:18 }}>€{fin.totalCost.toFixed(2)}</span>
+        </div>
+      </Card>
+
+      <Card style={{ padding:20 }}>
+        <div style={{ fontWeight:700, fontSize:14, color:C.inkMid, marginBottom:14 }}>KOSTEN PER DAG</div>
+        <div style={{ display:'flex', gap:6 }}>
+          {DAYS.map((d, di) => {
+            const dayCost = allStaff.filter(s => s.is_active && currentSchedule[s.id]?.[di]).reduce((a, s) => {
+              const sh = currentSchedule[s.id]?.[di]
+              const t = sh && shiftTemplates[sh]
+              return a + (t ? (parseTime(t.end_time)-parseTime(t.start_time)-t.break_minutes)/60*s.hourly_rate : 0)
+            }, 0)
+            const isFest = fin.festDates?.has(currentWeek.dates[di])
+            return (
+              <div key={d} style={{ flex:1, textAlign:'center' }}>
+                <div style={{ height:60, display:'flex', alignItems:'flex-end', justifyContent:'center', marginBottom:4 }}>
+                  <div style={{ width:'70%', height:`${Math.max(6,(dayCost/maxDay)*54)}px`,
+                    background:isFest?C.crimson:C.sky, borderRadius:'4px 4px 0 0', opacity:0.85 }}/>
+                </div>
+                <div style={{ fontWeight:700, fontSize:10, color:isFest?C.crimson:C.inkMuted }}>{d}{isFest?' 🎉':''}</div>
+                <div style={{ color:C.ink, fontWeight:800, fontSize:11 }}>€{dayCost.toFixed(0)}</div>
+              </div>
+            )
+          })}
+        </div>
+      </Card>
+    </div>
+  )
+}
+
+function InstellingenTab({ settings, orgId, shiftTemplates, onReload, show }) {
+  const [s, setS] = useState(settings)
+  const [tmplModal, setTmplModal] = useState(false)
+  const [editTmpl, setEditTmpl] = useState(null)
+
+  useEffect(() => setS(settings), [settings])
+
+  async function saveSettings() {
+    const { error } = await supabase.from('org_settings').upsert(
+      { org_id: orgId, ...s },
+      { onConflict: 'org_id' }
+    )
+    if (error) {
+      show('Fout bij opslaan: ' + error.message)
+      console.error('Settings save error:', error)
+    } else {
+      show('✓ Instellingen opgeslagen')
+      onReload()
+    }
+  }
+
+  async function saveTmpl() {
+    if (!editTmpl?.name) { show('Naam verplicht'); return }
+    if (editTmpl._isNew) {
+      await supabase.from('shift_templates').insert({
+        org_id: orgId, name: editTmpl.name,
+        start_time: editTmpl.start_time, end_time: editTmpl.end_time,
+        break_minutes: editTmpl.break_minutes,
+      })
+    } else {
+      await supabase.from('shift_templates').update({
+        name: editTmpl.name, start_time: editTmpl.start_time,
+        end_time: editTmpl.end_time, break_minutes: editTmpl.break_minutes,
+      }).eq('id', editTmpl.id)
+    }
+    setTmplModal(false); onReload(); show(`✓ ${editTmpl.name} ${editTmpl._isNew?'toegevoegd':'bijgewerkt'}`)
+  }
+
+  const inp = (label, key, type='number', extra={}) => (
+    <div style={{ marginBottom:14 }}>
+      <div style={{ fontSize:12, fontWeight:700, color:C.inkMid, marginBottom:5 }}>{label}</div>
+      <input type={type} value={s[key]||''} onChange={e => setS(p=>({...p,[key]:type==='number'?+e.target.value:e.target.value}))}
+        style={{ width:'100%', padding:'10px 12px', borderRadius:10, border:`1px solid ${C.border}`,
+          fontSize:14, fontFamily:'inherit', color:C.ink, boxSizing:'border-box' }} {...extra}/>
+    </div>
+  )
+
+  return (
+    <div style={{ display:'flex', flexDirection:'column', gap:14 }}>
+      <div style={{ fontWeight:900, fontSize:20, color:C.ink }}>Instellingen</div>
+
+      <Card style={{ padding:20 }}>
+        <div style={{ display:'flex', justifyContent:'space-between', alignItems:'center', marginBottom:14 }}>
+          <div style={{ fontWeight:800, fontSize:15 }}>Dienst templates</div>
+          <button onClick={() => { setEditTmpl({ _isNew:true, name:'', start_time:'09:00', end_time:'17:00', break_minutes:30 }); setTmplModal(true) }}
+            style={{ ...btn(), background:C.ink, color:C.white, padding:'7px 14px', fontSize:12, borderRadius:9 }}>＋ Nieuwe dienst</button>
+        </div>
+        {Object.values(shiftTemplates).sort((a,b) => (a.start_time||'').localeCompare(b.start_time||'')).map(t => (
+          <div key={t.id} style={{ display:'flex', alignItems:'center', gap:12, padding:'12px 0', borderBottom:`1px solid #EEE9E0` }}>
+            <div style={{ flex:1 }}>
+              <div style={{ fontWeight:700, fontSize:14, color:C.ink }}>{t.name}</div>
+              <div style={{ color:C.inkMuted, fontSize:12 }}>{t.start_time}–{t.end_time} · {((parseTime(t.end_time)-parseTime(t.start_time)-t.break_minutes)/60).toFixed(1)}u · {t.break_minutes}min pauze</div>
+            </div>
+            <button onClick={() => { setEditTmpl({...t, _isNew:false}); setTmplModal(true) }}
+              style={{ ...btn(), background:'#EBE7DE', color:C.inkMid, padding:'7px 14px', fontSize:12, borderRadius:9 }}>Bewerken</button>
+          </div>
+        ))}
+      </Card>
+
+      <Card style={{ padding:20 }}>
+        <div style={{ fontWeight:800, fontSize:15, marginBottom:14 }}>Rooster instellingen</div>
+        {inp('Max dagen per week','max_days_per_week','number',{min:1,max:7,step:1})}
+        {inp('Max overwerk uren per week','max_overtime_hours','number',{min:0,max:20,step:0.5})}
+        {inp('Minimale rust tussen diensten (uren)','min_rest_hours','number',{min:0,max:24,step:0.5})}
+        <button onClick={saveSettings} style={{ ...btn(), background:C.ink, color:C.white, padding:'11px', width:'100%', fontSize:14, borderRadius:11 }}>Opslaan</button>
+      </Card>
+
+      <Card style={{ padding:20 }}>
+        <div style={{ fontWeight:800, fontSize:15, marginBottom:14 }}>📧 E-mail (Resend)</div>
+        {inp('Resend API Key','resend_api_key','text')}
+        {inp('Verzendadres','sender_email','email')}
+        <div style={{ display:'flex', justifyContent:'space-between', alignItems:'center', padding:'12px 14px',
+          background:s.auto_email_enabled?C.jadeSoft:'#EBE7DE', borderRadius:12, marginBottom:14,
+          border:`1px solid ${s.auto_email_enabled?C.jade+'44':C.border}` }}>
+          <div>
+            <div style={{ fontWeight:700, fontSize:13 }}>Automatische herinnering op de 10e</div>
+            <div style={{ color:C.inkMuted, fontSize:12, marginTop:2 }}>Stuurt email naar medewerkers zonder beschikbaarheid</div>
+          </div>
+          <button onClick={() => setS(p=>({...p,auto_email_enabled:!p.auto_email_enabled}))}
+            style={{ ...btn(), padding:'8px 16px', fontSize:13, borderRadius:10,
+              background:s.auto_email_enabled?C.jade:'#EBE7DE', color:s.auto_email_enabled?C.white:C.inkMid,
+              border:`1px solid ${s.auto_email_enabled?C.jade:C.border}`, flexShrink:0, marginLeft:12 }}>
+            {s.auto_email_enabled?'Aan':'Uit'}
+          </button>
+        </div>
+        <button onClick={saveSettings} style={{ ...btn(), background:C.jade, color:C.white, padding:'11px', width:'100%', fontSize:14, borderRadius:11 }}>Opslaan</button>
+      </Card>
+
+      <Card style={{ padding:20 }}>
+        <div style={{ fontWeight:800, fontSize:15, marginBottom:4 }}>🔄 App updaten</div>
+        <div style={{ color:C.inkMuted, fontSize:13, marginBottom:14 }}>Laad een nieuwe versie door updatecode + URL in te voeren</div>
+        {inp('Update URL','update_url','url')}
+        {inp('Update code','update_code','text')}
+        <button onClick={saveSettings} style={{ ...btn(), background:C.ink, color:C.white, padding:'11px', width:'100%', fontSize:14, borderRadius:11 }}>Opslaan</button>
+      </Card>
+
+      {tmplModal && editTmpl && (
+        <div style={{ position:'fixed', inset:0, background:'rgba(0,0,0,.45)', display:'flex', alignItems:'center', justifyContent:'center', zIndex:999, padding:16 }} onClick={() => setTmplModal(false)}>
+          <div style={{ background:C.surface, borderRadius:20, padding:24, width:'100%', maxWidth:380 }} onClick={e=>e.stopPropagation()}>
+            <div style={{ fontWeight:800, fontSize:18, marginBottom:18 }}>{editTmpl._isNew?'Nieuwe diensttijd':'Diensttijd bewerken'}</div>
+            {[['Naam *','name','text'],['Starttijd','start_time','time'],['Eindtijd','end_time','time']].map(([l,k,t]) => (
+              <div key={k} style={{ marginBottom:14 }}>
+                <div style={{ fontSize:12, fontWeight:700, color:C.inkMid, marginBottom:5 }}>{l}</div>
+                <input type={t} value={editTmpl[k]||''} onChange={e => setEditTmpl(p=>({...p,[k]:e.target.value}))}
+                  style={{ width:'100%', padding:'10px 12px', borderRadius:10, border:`1px solid ${C.border}`, fontSize:14, fontFamily:'inherit', boxSizing:'border-box' }}/>
+              </div>
+            ))}
+            <div style={{ marginBottom:16 }}>
+              <div style={{ fontSize:12, fontWeight:700, color:C.inkMid, marginBottom:5 }}>Pauze (minuten)</div>
+              <input type="number" value={editTmpl.break_minutes||0} onChange={e => setEditTmpl(p=>({...p,break_minutes:+e.target.value}))}
+                min={0} max={90} step={5}
+                style={{ width:'100%', padding:'10px 12px', borderRadius:10, border:`1px solid ${C.border}`, fontSize:14, boxSizing:'border-box' }}/>
+            </div>
+            <div style={{ background:'#EBE7DE', borderRadius:10, padding:'10px 14px', marginBottom:16, fontSize:13, color:C.inkMid }}>
+              Werktijd: <strong>{editTmpl.start_time&&editTmpl.end_time?((parseTime(editTmpl.end_time)-parseTime(editTmpl.start_time)-(editTmpl.break_minutes||0))/60).toFixed(1):0}u</strong>
+            </div>
+            <div style={{ display:'flex', gap:10 }}>
+              <button onClick={() => setTmplModal(false)} style={{ ...btn(), flex:1, background:'#EBE7DE', color:C.inkMid, padding:'12px', borderRadius:12 }}>Annuleren</button>
+              {!editTmpl._isNew && (
+                <button onClick={async()=>{await supabase.from('shift_templates').delete().eq('id',editTmpl.id);setTmplModal(false);onReload();show('✓ Verwijderd')}}
+                  style={{ ...btn(), background:C.crimsonSoft, color:C.crimson, padding:'12px 14px', borderRadius:12, fontSize:13 }}>🗑</button>
+              )}
+              <button onClick={saveTmpl} style={{ ...btn(), flex:2, background:C.ink, color:C.white, padding:'12px', borderRadius:12 }}>
+                {editTmpl._isNew?'Toevoegen':'Opslaan'}
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+    </div>
+  )
+}ials } from '../lib/scheduler'
 import {
   C, DEPTS, CONTRACT_TYPES, Badge, Card, Avatar, Toast, WeekNav,
   Input, Select, btn, getWeekDates, getMondayOfWeek, formatDate,
