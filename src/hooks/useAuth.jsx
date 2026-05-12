@@ -75,7 +75,11 @@ export function AuthProvider({ children }) {
   async function signOut() {
     setStaff(null)
     setLoading(false)
-    await supabase.auth.signOut()
+    await supabase.auth.signOut({ scope: 'local' })
+    // Clear all local storage to prevent session caching issues
+    localStorage.clear()
+    sessionStorage.clear()
+    window.location.href = '/'
   }
 
   return (
