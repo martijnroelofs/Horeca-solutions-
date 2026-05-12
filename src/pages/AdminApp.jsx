@@ -245,9 +245,10 @@ export default function AdminApp() {
     setAssignments(byWeek)
   }
   async function loadLeaves() {
+    // Load via staff join on org_id to avoid dependency on allStaff being loaded
     const { data } = await supabase.from('leave_requests')
-      .select('*, staff:staff_id(name,color)')
-      .in('staff_id', allStaff.length ? allStaff.map(s => s.id) : ['00000000-0000-0000-0000-000000000000'])
+      .select('*, staff:staff_id!inner(id,name,color,org_id)')
+      .eq('staff.org_id', orgId)
       .order('created_at', { ascending: false })
     setLeaveRequests(data || [])
   }
