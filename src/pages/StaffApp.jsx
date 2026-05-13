@@ -27,7 +27,8 @@ export default function StaffApp() {
 
   // Data
   const [myAssignments, setMyAssignments] = useState({}) // { monday: [shift×7] }
-  const [rosterStatus, setRosterStatus] = useState({})   // { monday: status }
+  const [rosterStatus, setRosterStatus] = useState({})
+  const [rosterMap, setRosterMap] = useState({}) // week_start -> roster_id   // { monday: status }
   const [shiftTemplates, setShiftTemplates] = useState({})
   const [allStaff, setAllStaff] = useState([])
   const [leaveRequests, setLeaveRequests] = useState([])
@@ -68,8 +69,10 @@ export default function StaffApp() {
   async function loadAssignments() {
     const { data: rosters } = await supabase.from('rosters').select('*').eq('org_id', me.org_id)
     const statusMap = {}
-    ;(rosters || []).forEach(r => { statusMap[r.week_start] = r.status })
+    const rMap = {}
+    ;(rosters || []).forEach(r => { statusMap[r.week_start] = r.status; rMap[r.week_start] = r.id })
     setRosterStatus(statusMap)
+    setRosterMap(rMap)
 
     const rIds = (rosters || []).map(r => r.id)
     if (!rIds.length) return
@@ -91,9 +94,9 @@ export default function StaffApp() {
 
   async function loadOpenShifts() {
     const { data } = await supabase.from('open_shifts')
-      .select('*, original_staff:staff!original_staff_id(name)')
+      .select('*, original_staff:staff!original_staff_id(name,color)')
       .eq('org_id', me.org_id)
-      .eq('status', 'open')
+      .in('status', ['open', 'claimed'])
       .order('date')
     setOpenShifts(data || [])
   }
@@ -137,6 +140,25 @@ export default function StaffApp() {
     setAvailOverrides(ovMap)
   }
 
+  async function putShiftOpen(date, shiftName, rosterId) {
+    // Check if already open
+    const { data: existing } = await supabase.from('open_shifts')
+      .select('id').eq('original_staff_id', me.id).eq('date', date).eq('status', 'open')
+      .maybeSingle()
+    if (existing) { show('Deze dienst staat al open'); return }
+    const { error } = await supabase.from('open_shifts').insert({
+      org_id: me.org_id,
+      roster_id: rosterId,
+      date,
+      shift_name: shiftName,
+      original_staff_id: me.id,
+      status: 'open'
+    })
+    if (error) { show('Fout: ' + error.message); return }
+    await loadOpenShifts()
+    show('✓ Dienst opengezet — collega's kunnen nu reageren')
+  }
+
   async function claimOpenShift(openShiftId) {
     const { error } = await supabase.from('open_shifts')
       .update({ status: 'claimed', claimed_by_id: me.id })
@@ -170,7 +192,7 @@ export default function StaffApp() {
   async function requestLeave(date, reason) {
     if (!me?.id) { show('Fout: niet ingelogd'); return }
     const { data, error } = await supabase.from('leave_requests')
-      .insert({ staff_id:me.id, date, reason })
+      .insert({ staff_id:me.id, date, reason, status:'pending' })
       .select()
     if (error) { show('Fout: ' + error.message); console.error('leave error:', error); return }
     await loadLeaves()
@@ -200,7 +222,7 @@ export default function StaffApp() {
     { id:'rooster',      icon:'📅', l:'Rooster' },
     { id:'beschikbaar',  icon:'✏️',  l:'Beschikbaar' },
     { id:'vrij',         icon:'🏖',  l:'Vrij' },
-    { id:'ruilen',       icon:'🔄',  l:'Ruilen' },
+    { id:'ruilen', icon:'🔄', l:'Ruilen', badge: openShifts.filter(o => o.original_staff_id !== me?.id).length },
   ]
 
   if (loading) return (
@@ -244,7 +266,15 @@ export default function StaffApp() {
                 padding:'9px 4px 13px', fontSize:10, fontWeight:700,
                 borderBottom:`3px solid ${tab===t.id?C.gold:'transparent'}`,
                 display:'flex', flexDirection:'column', alignItems:'center', gap:2 }}>
-              <span style={{ fontSize:16 }}>{t.icon}</span>{t.l}
+              <span style={{ position:'relative', display:'inline-block' }}>
+                <span style={{ fontSize:16 }}>{t.icon}</span>
+                {t.badge > 0 && (
+                  <span style={{ position:'absolute', top:-4, right:-8, background:C.amber,
+                    color:C.white, borderRadius:99, fontSize:8, fontWeight:800,
+                    padding:'1px 4px', minWidth:14, textAlign:'center' }}>{t.badge}</span>
+                )}
+              </span>
+              {t.l}
             </button>
           ))}
         </div>
@@ -394,7 +424,12 @@ export default function StaffApp() {
             swapRequests={swapRequests} allStaff={allStaff}
             schedule={schedule} shiftTemplates={shiftTemplates}
             currentWeek={currentWeek} myId={me.id}
-            onRequest={requestSwap} show={show}
+            openShifts={openShifts}
+            onRequest={requestSwap}
+            onPutOpen={putShiftOpen}
+            onClaim={claimOpenShift}
+            rosterMap={rosterMap}
+            show={show}
           />
         )}
       </div>
@@ -671,75 +706,184 @@ function LeaveTab({ leaveRequests, onRequest, show }) {
   </>
 }
 
-function SwapTab({ swapRequests, allStaff, schedule, shiftTemplates, currentWeek, myId, onRequest, show }) {
-  const [modal, setModal] = useState(false)
+function SwapTab({ swapRequests, allStaff, schedule, shiftTemplates, currentWeek, myId, openShifts, onRequest, onPutOpen, onClaim, rosterMap, show }) {
+  const [swapModal, setSwapModal] = useState(false)
   const [form, setForm] = useState({ myDay:0, withId:'', theirDay:0 })
 
-  return <>
-    <button onClick={() => setModal(true)}
-      style={{ ...btn(), background:C.ink, color:C.white, padding:'14px', fontSize:15, borderRadius:14,
-        display:'flex', alignItems:'center', justifyContent:'center', gap:8 }}>
-      🔄 Dienst ruilen
-    </button>
-    {swapRequests.length === 0
-      ? <Card style={{ textAlign:'center', padding:40 }}><div style={{ fontSize:36, marginBottom:8 }}>🔄</div><div style={{ color:C.inkMuted }}>Nog geen ruilverzoeken</div></Card>
-      : swapRequests.map(sw => {
-        const isFrom = sw.from_staff_id === myId
-        const other = isFrom ? sw.to_staff : sw.from_staff
-        return (
-          <Card key={sw.id} style={{ padding:'14px 16px' }}>
-            <div style={{ display:'flex', justifyContent:'space-between', alignItems:'center' }}>
-              <div>
-                <div style={{ fontWeight:700, fontSize:13, color:C.ink }}>
-                  {isFrom ? sw.from_date : sw.to_date} ↔ {other?.name?.split(' ')[0]} ({isFrom ? sw.to_date : sw.from_date})
+  // Open shifts from colleagues (not mine)
+  const colleagueOpenShifts = (openShifts||[]).filter(o => o.original_staff_id !== myId && o.status === 'open')
+  // My own open shifts
+  const myOpenShifts = (openShifts||[]).filter(o => o.original_staff_id === myId && o.status === 'open')
+
+  return (
+    <div style={{ display:'flex', flexDirection:'column', gap:14 }}>
+
+      {/* ── Mijn diensten openzetten ── */}
+      <Card style={{ padding:'16px' }}>
+        <div style={{ fontWeight:800, fontSize:15, marginBottom:4 }}>📤 Dienst openzetten</div>
+        <div style={{ color:C.inkMuted, fontSize:13, marginBottom:14 }}>
+          Zet een dienst open zodat collega's hem kunnen overnemen. Zij ontvangen een melding.
+        </div>
+        <div style={{ display:'flex', flexDirection:'column', gap:8 }}>
+          {schedule.map((sh, di) => {
+            if (!sh) return null
+            const t = shiftTemplates[sh]
+            if (!t) return null
+            const date = currentWeek.dates[di]
+            const isOpen = myOpenShifts.some(o => o.date === date && o.shift_name === sh)
+            const rosterId = rosterMap?.[currentWeek.monday]
+            return (
+              <div key={di} style={{ display:'flex', alignItems:'center', justifyContent:'space-between',
+                padding:'10px 12px', background:C.surfaceAlt, borderRadius:10, gap:10 }}>
+                <div>
+                  <div style={{ fontWeight:700, fontSize:13, color:C.ink }}>{DAYS_FULL[di]} — {sh}</div>
+                  <div style={{ color:C.inkMuted, fontSize:11 }}>{t.start_time}–{t.end_time}</div>
                 </div>
-                <div style={{ color:C.inkMuted, fontSize:12, marginTop:2 }}>{isFrom?'Jouw verzoek':'Inkomend verzoek'}</div>
+                {isOpen ? (
+                  <Badge color={C.amber}>🔓 Opengezet</Badge>
+                ) : (
+                  <button onClick={() => onPutOpen(date, sh, rosterId)}
+                    style={{ ...btn(), background:C.amber, color:C.white, padding:'7px 14px', fontSize:12, borderRadius:9 }}>
+                    📤 Openzetten
+                  </button>
+                )}
               </div>
-              <Badge color={sw.status==='approved'?C.jade:C.amber}>{sw.status==='approved'?'✓ Geruild':'⏳ Wacht'}</Badge>
+            )
+          })}
+          {schedule.every(s => !s) && (
+            <div style={{ color:C.inkMuted, fontSize:13, textAlign:'center', padding:'20px 0' }}>
+              Geen diensten deze week
             </div>
-          </Card>
-        )
-      })
-    }
-    {modal && (
-      <div style={{ position:'fixed', inset:0, background:'rgba(0,0,0,.45)', display:'flex', alignItems:'flex-end', justifyContent:'center', zIndex:999 }} onClick={() => setModal(false)}>
-        <div style={{ background:C.surface, borderRadius:'20px 20px 0 0', padding:24, width:'100%', maxWidth:500 }} onClick={e=>e.stopPropagation()}>
-          <div style={{ fontWeight:800, fontSize:18, marginBottom:18 }}>Dienst ruilen</div>
-          <div style={{ marginBottom:14 }}>
-            <div style={{ fontSize:12, fontWeight:700, color:C.inkMid, marginBottom:5 }}>Mijn dienst op</div>
-            <select value={form.myDay} onChange={e => setForm(f=>({...f,myDay:+e.target.value}))}
-              style={{ width:'100%', padding:'11px 14px', borderRadius:10, border:`1px solid ${C.border}`, fontSize:14, color:C.ink }}>
-              {DAYS_FULL.map((d, i) => {
-                const sh = schedule[i]; const t = sh && shiftTemplates[sh]
-                return <option key={i} value={i}>{d} {t?`— ${t.start_time}–${t.end_time}`:'(vrij)'}</option>
-              })}
-            </select>
+          )}
+        </div>
+      </Card>
+
+      {/* ── Open diensten van collega's ── */}
+      <Card style={{ padding:'16px' }}>
+        <div style={{ display:'flex', alignItems:'center', gap:8, marginBottom:4 }}>
+          <div style={{ fontWeight:800, fontSize:15 }}>🤝 Diensten overnemen</div>
+          {colleagueOpenShifts.length > 0 && (
+            <span style={{ background:C.amber, color:C.white, borderRadius:99, fontSize:11,
+              fontWeight:800, padding:'2px 8px' }}>{colleagueOpenShifts.length}</span>
+          )}
+        </div>
+        <div style={{ color:C.inkMuted, fontSize:13, marginBottom:14 }}>
+          Collega's die hun dienst hebben opengezet.
+        </div>
+        {colleagueOpenShifts.length === 0 ? (
+          <div style={{ color:C.inkMuted, fontSize:13, textAlign:'center', padding:'20px 0' }}>
+            Geen open diensten van collega's
           </div>
-          <div style={{ marginBottom:14 }}>
-            <div style={{ fontSize:12, fontWeight:700, color:C.inkMid, marginBottom:5 }}>Ruilen met</div>
-            <select value={form.withId} onChange={e => setForm(f=>({...f,withId:e.target.value}))}
-              style={{ width:'100%', padding:'11px 14px', borderRadius:10, border:`1px solid ${C.border}`, fontSize:14, color:C.ink }}>
-              <option value="">Kies collega</option>
-              {allStaff.filter(s => s.id !== myId).map(s => <option key={s.id} value={s.id}>{s.name}</option>)}
-            </select>
+        ) : (
+          <div style={{ display:'flex', flexDirection:'column', gap:8 }}>
+            {colleagueOpenShifts.map(o => {
+              const t = shiftTemplates[o.shift_name]
+              const myDayShift = schedule[currentWeek.dates.indexOf(o.date)]
+              return (
+                <div key={o.id} style={{ padding:'12px 14px', background:C.amberSoft,
+                  border:`1px solid ${C.amber}44`, borderRadius:12,
+                  display:'flex', justifyContent:'space-between', alignItems:'center', gap:10, flexWrap:'wrap' }}>
+                  <div>
+                    <div style={{ fontWeight:700, fontSize:13, color:C.ink }}>
+                      {o.original_staff?.name?.split(' ')[0]} — {o.date}
+                    </div>
+                    <div style={{ color:C.inkMuted, fontSize:12, marginTop:2 }}>
+                      {o.shift_name}{t ? ` (${t.start_time}–${t.end_time})` : ''}
+                    </div>
+                  </div>
+                  {myDayShift ? (
+                    <span style={{ fontSize:11, color:C.inkMuted }}>Al ingeroosterd</span>
+                  ) : (
+                    <button onClick={() => onClaim(o.id)}
+                      style={{ ...btn(), background:C.jade, color:C.white, padding:'8px 16px', fontSize:13, borderRadius:10 }}>
+                      ✋ Overnemen
+                    </button>
+                  )}
+                </div>
+              )
+            })}
           </div>
-          <div style={{ marginBottom:20 }}>
-            <div style={{ fontSize:12, fontWeight:700, color:C.inkMid, marginBottom:5 }}>Hun dienst op</div>
-            <select value={form.theirDay} onChange={e => setForm(f=>({...f,theirDay:+e.target.value}))}
-              style={{ width:'100%', padding:'11px 14px', borderRadius:10, border:`1px solid ${C.border}`, fontSize:14, color:C.ink }}>
-              {DAYS_FULL.map((d, i) => <option key={i} value={i}>{d}</option>)}
-            </select>
+        )}
+      </Card>
+
+      {/* ── Directe ruilverzoeken ── */}
+      <Card style={{ padding:'16px' }}>
+        <div style={{ fontWeight:800, fontSize:15, marginBottom:4 }}>🔄 Direct ruilen met collega</div>
+        <div style={{ color:C.inkMuted, fontSize:13, marginBottom:14 }}>
+          Stuur een ruilverzoek naar een specifieke collega.
+        </div>
+        <button onClick={() => setSwapModal(true)}
+          style={{ ...btn(), background:C.ink, color:C.white, padding:'12px', fontSize:14, borderRadius:12,
+            display:'flex', alignItems:'center', justifyContent:'center', gap:8, width:'100%' }}>
+          🔄 Ruilverzoek sturen
+        </button>
+        {swapRequests.length > 0 && (
+          <div style={{ marginTop:14, display:'flex', flexDirection:'column', gap:8 }}>
+            {swapRequests.map(sw => {
+              const isFrom = sw.from_staff_id === myId
+              const other = isFrom ? sw.to_staff : sw.from_staff
+              return (
+                <div key={sw.id} style={{ display:'flex', justifyContent:'space-between', alignItems:'center',
+                  padding:'10px 12px', background:C.surfaceAlt, borderRadius:10 }}>
+                  <div>
+                    <div style={{ fontWeight:700, fontSize:13, color:C.ink }}>
+                      {isFrom ? sw.from_date : sw.to_date} ↔ {other?.name?.split(' ')[0]} ({isFrom ? sw.to_date : sw.from_date})
+                    </div>
+                    <div style={{ color:C.inkMuted, fontSize:11, marginTop:2 }}>
+                      {isFrom ? 'Jouw verzoek' : 'Inkomend verzoek'}
+                    </div>
+                  </div>
+                  <Badge color={sw.status==='approved'?C.jade:C.amber}>
+                    {sw.status==='approved'?'✓ Geruild':'⏳ Wacht'}
+                  </Badge>
+                </div>
+              )
+            })}
           </div>
-          <div style={{ display:'flex', gap:10 }}>
-            <button onClick={() => setModal(false)} style={{ ...btn(), flex:1, background:'#EBE7DE', color:C.inkMid, padding:'13px', borderRadius:12 }}>Annuleren</button>
-            <button onClick={() => {
-              if (!form.withId) return
-              onRequest(currentWeek.dates[form.myDay], form.withId, currentWeek.dates[form.theirDay])
-              setModal(false)
-            }} style={{ ...btn(), flex:2, background:C.terra, color:C.white, padding:'13px', borderRadius:12 }}>Sturen</button>
+        )}
+      </Card>
+
+      {/* Swap modal */}
+      {swapModal && (
+        <div style={{ position:'fixed', inset:0, background:'rgba(0,0,0,.45)', display:'flex', alignItems:'flex-end', justifyContent:'center', zIndex:999 }} onClick={() => setSwapModal(false)}>
+          <div style={{ background:C.surface, borderRadius:'20px 20px 0 0', padding:24, width:'100%', maxWidth:500 }} onClick={e=>e.stopPropagation()}>
+            <div style={{ fontWeight:800, fontSize:18, marginBottom:18 }}>Dienst ruilen</div>
+            <div style={{ marginBottom:14 }}>
+              <div style={{ fontSize:12, fontWeight:700, color:C.inkMid, marginBottom:5 }}>Mijn dienst op</div>
+              <select value={form.myDay} onChange={e => setForm(f=>({...f,myDay:+e.target.value}))}
+                style={{ width:'100%', padding:'11px 14px', borderRadius:10, border:`1px solid ${C.border}`, fontSize:14, color:C.ink }}>
+                {DAYS_FULL.map((d, i) => {
+                  const sh = schedule[i]; const t = sh && shiftTemplates[sh]
+                  return <option key={i} value={i}>{d} {t?`— ${t.start_time}–${t.end_time}`:'(vrij)'}</option>
+                })}
+              </select>
+            </div>
+            <div style={{ marginBottom:14 }}>
+              <div style={{ fontSize:12, fontWeight:700, color:C.inkMid, marginBottom:5 }}>Ruilen met</div>
+              <select value={form.withId} onChange={e => setForm(f=>({...f,withId:e.target.value}))}
+                style={{ width:'100%', padding:'11px 14px', borderRadius:10, border:`1px solid ${C.border}`, fontSize:14, color:C.ink }}>
+                <option value="">Kies collega</option>
+                {allStaff.filter(s => s.id !== myId).map(s => <option key={s.id} value={s.id}>{s.name}</option>)}
+              </select>
+            </div>
+            <div style={{ marginBottom:20 }}>
+              <div style={{ fontSize:12, fontWeight:700, color:C.inkMid, marginBottom:5 }}>Hun dienst op</div>
+              <select value={form.theirDay} onChange={e => setForm(f=>({...f,theirDay:+e.target.value}))}
+                style={{ width:'100%', padding:'11px 14px', borderRadius:10, border:`1px solid ${C.border}`, fontSize:14, color:C.ink }}>
+                {DAYS_FULL.map((d, i) => <option key={i} value={i}>{d}</option>)}
+              </select>
+            </div>
+            <div style={{ display:'flex', gap:10 }}>
+              <button onClick={() => setSwapModal(false)} style={{ ...btn(), flex:1, background:'#EBE7DE', color:C.inkMid, padding:'13px', borderRadius:12 }}>Annuleren</button>
+              <button onClick={() => {
+                if (!form.withId) return
+                onRequest(currentWeek.dates[form.myDay], form.withId, currentWeek.dates[form.theirDay])
+                setSwapModal(false)
+              }} style={{ ...btn(), flex:2, background:C.terra, color:C.white, padding:'13px', borderRadius:12 }}>Sturen</button>
+            </div>
           </div>
         </div>
-      </div>
-    )}
-  </>
+      )}
+    </div>
+  )
 }
