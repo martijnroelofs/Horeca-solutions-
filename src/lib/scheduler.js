@@ -122,7 +122,7 @@ export function generateSchedule({
     // Process each dept slot
     DEPT_KEYS.forEach(dk => {
       const deptSlots = daySlots.filter(s => s.dept === dk)
-      deptSlots.forEach(slot => {
+      for (const slot of deptSlots) {
         const shift = shiftTemplates[slot.shift_name]
         if (!shift) return
 
@@ -140,16 +140,14 @@ export function generateSchedule({
             s.is_active && s.depts?.includes(dk) &&
             schedule[s.id][di] === null
         })
+        let fixedAssigned = 0
         if (fixedForSlot.length > 0) {
-          let fixedAssigned = 0
           fixedForSlot.forEach(s => {
             if (fixedAssigned >= slot.count) return
-            // Check availability
             const patternBits = availabilityPatterns?.[s.id]?.[dayOfWeek] ?? 0
             const overrideBits = availabilityOverrides?.[s.id]?.[date]
             const availBits = overrideBits !== undefined ? overrideBits : patternBits
             if (availBits === 0) return
-            // Check rest hours
             if (lastShiftEnd[s.id]) {
               const endMins = parseTime(lastShiftEnd[s.id])
               const startMins = parseTime(shift.start_time)
@@ -161,8 +159,10 @@ export function generateSchedule({
             lastShiftEnd[s.id] = shift.end_time
             fixedAssigned++
           })
-          if (fixedAssigned >= slot.count) continue
         }
+        const slotRemaining = slot.count - fixedAssigned
+        if (slotRemaining <= 0) { /* fully filled by fixed assignments */ }
+        else {
 
         // Find eligible staff
         const pool = staff.filter(s => {
@@ -243,9 +243,10 @@ export function generateSchedule({
           lastShiftEnd[s.id] = shift.end_time
           assigned++
         })
-      })
-    })
-  })
+        } // end else pool assignment
+      } // end for slot of deptSlots
+    }) // end DEPT_KEYS.forEach
+  }) // end weekDates.forEach
 
   // Calculate overtime per staff
   const weekOT = {}
