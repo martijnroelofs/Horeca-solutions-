@@ -156,7 +156,7 @@ export default function StaffApp() {
     })
     if (error) { show('Fout: ' + error.message); return }
     await loadOpenShifts()
-    show('✓ Dienst opengezet — collega's kunnen nu reageren')
+    show("✓ Dienst opengezet — collega's kunnen nu reageren")
   }
 
   async function claimOpenShift(openShiftId) {
