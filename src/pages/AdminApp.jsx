@@ -862,12 +862,10 @@ export default function AdminApp() {
           <PersoneelTab
             allStaff={allStaff} capacities={capacities}
             orgId={orgId} onReload={loadAll} show={show}
-            shiftTemplates={shiftTemplates}
             currentSchedule={currentSchedule}
             overtimeLog={overtimeLog}
             availPatterns={availPatterns}
             fixedAssignments={fixedAssignments}
-            shiftTemplates={shiftTemplates}
           />
         )}
 
