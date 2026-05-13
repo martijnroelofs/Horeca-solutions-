@@ -1435,8 +1435,9 @@ function TemplateTab({ templateSlots: initialSlots, shiftTemplates, peakMoments,
               </div>
               {slots.length === 0 && <div style={{ color:C.inkMuted, fontSize:12, fontStyle:'italic' }}>Geen diensten op {DAYS_FULL[dayTab]}</div>}
               {slots.map(slot => (
-                <div key={slot.id} style={{ display:'flex', alignItems:'center', gap:8, marginBottom:8,
-                  padding:'10px 12px', background:C.surfaceAlt, borderRadius:10 }}>
+                <div key={slot.id} style={{ marginBottom:10, background:C.surfaceAlt, borderRadius:10, overflow:'hidden' }}>
+                <div style={{ display:'flex', alignItems:'center', gap:8,
+                  padding:'10px 12px' }}>
                   <select value={slot.shift_name}
                     onChange={e => updateSlot(slot.id, { shift_name: e.target.value })}
                     style={{ flex:2, padding:'7px 10px', borderRadius:8, border:`1px solid ${C.border}`, fontSize:13, color:C.ink }}>
@@ -1496,6 +1497,7 @@ function TemplateTab({ templateSlots: initialSlots, shiftTemplates, peakMoments,
                     </div>
                   )
                 })()}
+                </div>
               ))}
             </div>
           )
