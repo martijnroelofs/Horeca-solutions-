@@ -66,6 +66,7 @@ export function generateSchedule({
   weekDates,           // ['2025-05-05', ..., '2025-05-11'] — 7 dates Mon-Sun
   settings = {},
   otHistory = {},      // { staffId: hoursOT }
+  fixedAssignments = {}, // { staffId: { dayOfWeek: { dept, shift_name } } }
 }) {
   const {
     max_days_per_week = 5,
@@ -131,17 +132,39 @@ export function generateSchedule({
 
         const shiftDuration = shiftHours(shift)
 
-        // Find eligible staff
-        if (dk === 'keuken') {
-          const keukenstaf = staff.filter(s => s.depts?.includes('keuken'))
-          keukenstaf.forEach(s => {
+        // ── Apply fixed assignments first ──────────────────────────
+        // Check if any staff member has a fixed assignment for this exact slot
+        const fixedForSlot = staff.filter(s => {
+          const fa = fixedAssignments[s.id]?.[dayOfWeek]
+          return fa && fa.dept === dk && fa.shift_name === slot.shift_name &&
+            s.is_active && s.depts?.includes(dk) &&
+            schedule[s.id][di] === null
+        })
+        if (fixedForSlot.length > 0) {
+          let fixedAssigned = 0
+          fixedForSlot.forEach(s => {
+            if (fixedAssigned >= slot.count) return
+            // Check availability
             const patternBits = availabilityPatterns?.[s.id]?.[dayOfWeek] ?? 0
             const overrideBits = availabilityOverrides?.[s.id]?.[date]
             const availBits = overrideBits !== undefined ? overrideBits : patternBits
-            const alreadyAssigned = schedule[s.id][di] !== null
-            console.log('KEUKEN CHECK:', s.name, 'day:', di, 'availBits:', availBits, 'alreadyAssigned:', alreadyAssigned, 'schedule:', schedule[s.id][di])
+            if (availBits === 0) return
+            // Check rest hours
+            if (lastShiftEnd[s.id]) {
+              const endMins = parseTime(lastShiftEnd[s.id])
+              const startMins = parseTime(shift.start_time)
+              const restHours = (startMins + 1440 - endMins) % 1440 / 60
+              if (restHours < minRestHours) return
+            }
+            schedule[s.id][di] = slot.shift_name
+            hoursPlanned[s.id] += (parseTime(shift.end_time) - parseTime(shift.start_time)) / 60
+            lastShiftEnd[s.id] = shift.end_time
+            fixedAssigned++
           })
+          if (fixedAssigned >= slot.count) continue
         }
+
+        // Find eligible staff
         const pool = staff.filter(s => {
           if (!s.is_active) return false
           if (!s.depts?.includes(dk)) return false
@@ -215,7 +238,6 @@ export function generateSchedule({
         let assigned = 0
         finalPool.forEach(s => {
           if (assigned >= slot.count) return
-          if (dk === 'keuken') console.log('KEUKEN assign:', s.name, 'day:', di, 'shift:', slot.shift_name, 'already has:', schedule[s.id][di])
           schedule[s.id][di] = slot.shift_name
           hoursPlanned[s.id] += shiftDuration
           lastShiftEnd[s.id] = shift.end_time
