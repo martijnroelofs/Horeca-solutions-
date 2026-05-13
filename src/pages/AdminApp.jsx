@@ -842,6 +842,9 @@ export default function AdminApp() {
             setActiveTemplateId={setActiveTemplateId}
             orgId={orgId} onReload={loadAll}
             onReloadSlots={loadTemplateSlots}
+            allStaff={allStaff}
+            fixedAssignments={fixedAssignments}
+            onReloadFixed={loadFixedAssignments}
             show={show}
           />
         )}
@@ -1188,7 +1191,7 @@ function HistorischTab({ weeks, rosters, assignments, allStaff, shiftTemplates, 
   )
 }
 
-function TemplateTab({ templateSlots: initialSlots, shiftTemplates, peakMoments, holidays, recurringPeaks, setRecurringPeaks, bezettingTemplates, activeTemplateId, setActiveTemplateId, onReloadSlots, orgId, onReload, show }) {
+function TemplateTab({ templateSlots: initialSlots, shiftTemplates, peakMoments, holidays, recurringPeaks, setRecurringPeaks, bezettingTemplates, activeTemplateId, setActiveTemplateId, onReloadSlots, orgId, onReload, show, allStaff, fixedAssignments, onReloadFixed }) {
   const [dayTab, setDayTab] = useState(0)
   const [newPeak, setNewPeak] = useState({ date:'', label:'', slots:7 })
   const [newHoliday, setNewHoliday] = useState({ date:'', name:'', is_closed:false })
@@ -1454,6 +1457,45 @@ function TemplateTab({ templateSlots: initialSlots, shiftTemplates, peakMoments,
                   <button onClick={() => removeSlot(slot.id)}
                     style={{ ...btn(), background:C.crimsonSoft, color:C.crimson, padding:'5px 9px', borderRadius:7, fontSize:12 }}>✕</button>
                 </div>
+                {(() => {
+                  const fa = (allStaff||[]).find(s => {
+                    const sfa = (fixedAssignments||{})[s.id]?.[dayTab]
+                    return sfa && sfa.dept === slot.dept && sfa.shift_name === slot.shift_name
+                  })
+                  const eligible = (allStaff||[]).filter(s => s.depts?.includes(slot.dept) && s.is_active)
+                  return (
+                    <div style={{ display:'flex', alignItems:'center', gap:8, marginTop:4, paddingTop:6,
+                      borderTop:`1px dashed ${C.border}` }}>
+                      <span style={{ fontSize:10, color:C.inkMuted, flexShrink:0 }}>📌 Vaste medewerker:</span>
+                      <select value={fa ? fa.id : ''}
+                        onChange={async e => {
+                          const newStaffId = e.target.value
+                          if (fa) {
+                            await supabase.from('fixed_assignments').delete()
+                              .eq('staff_id', fa.id).eq('day_of_week', dayTab)
+                          }
+                          if (newStaffId) {
+                            const existing = (fixedAssignments||{})[newStaffId]?.[dayTab]
+                            if (existing?.id) await supabase.from('fixed_assignments').delete().eq('id', existing.id)
+                            await supabase.from('fixed_assignments').insert({
+                              org_id: orgId, staff_id: newStaffId,
+                              day_of_week: dayTab, dept: slot.dept, shift_name: slot.shift_name
+                            })
+                          }
+                          if (onReloadFixed) onReloadFixed()
+                        }}
+                        style={{ flex:1, fontSize:11, padding:'4px 6px', borderRadius:6,
+                          border:`1px solid ${fa ? C.jade+'66' : C.border}`,
+                          background: fa ? C.jadeSoft : C.surfaceAlt,
+                          color: fa ? C.jade : C.inkMuted }}>
+                        <option value=''>— geen vaste —</option>
+                        {eligible.map(s => (
+                          <option key={s.id} value={s.id}>{s.name}</option>
+                        ))}
+                      </select>
+                    </div>
+                  )
+                })()}
               ))}
             </div>
           )
@@ -1623,7 +1665,6 @@ function PersoneelTab({ allStaff, capacities, orgId, onReload, show, shiftTempla
   const [editId, setEditId] = useState(null)
   const [capId, setCapId] = useState(null)
   const [availId, setAvailId] = useState(null)
-  const [fixedId, setFixedId] = useState(null)
   const [localScores, setLocalScores] = useState({})
   // Sync localScores when capacities are loaded from DB
   useEffect(() => { setLocalScores(capacities) }, [capacities])
@@ -1740,8 +1781,7 @@ function PersoneelTab({ allStaff, capacities, orgId, onReload, show, shiftTempla
                     style={{ ...btn(), flex:1, background:capId===s.id?C.ink:'#EBE7DE', color:capId===s.id?C.white:C.inkMid, padding:'7px', fontSize:12, borderRadius:9 }}>⭐ Capaciteit</button>
                     <button onClick={() => setAvailId(availId===s.id?null:s.id)}
                     style={{ ...btn(), flex:1, background:availId===s.id?C.sky:'#EBE7DE', color:availId===s.id?C.white:C.inkMid, padding:'7px', fontSize:12, borderRadius:9 }}>📅 Beschikbaar</button>
-                    <button onClick={() => setFixedId(fixedId===s.id?null:s.id)}
-                    style={{ ...btn(), flex:1, background:fixedId===s.id?C.jade:'#EBE7DE', color:fixedId===s.id?C.white:C.inkMid, padding:'7px', fontSize:12, borderRadius:9 }}>📌 Vaste dienst</button>
+
                   <button onClick={async () => { await supabase.from('staff').update({ is_active:!s.is_active }).eq('id', s.id); onReload() }}
                     style={{ ...btn(), flex:1, background:s.is_active?C.crimsonSoft:C.jadeSoft, color:s.is_active?C.crimson:C.jade, padding:'7px', fontSize:12, borderRadius:9 }}>
                     {s.is_active ? 'Deactiveren' : 'Activeren'}
@@ -1876,52 +1916,6 @@ function PersoneelTab({ allStaff, capacities, orgId, onReload, show, shiftTempla
                   </div>
                 )}
 
-                {fixedId === s.id && (
-                  <div style={{ marginTop:12, paddingTop:12, borderTop:`1px solid #EEE9E0` }}>
-                    <div style={{ fontWeight:700, fontSize:13, marginBottom:10, color:C.inkMid }}>
-                      📌 Vaste diensten — deze medewerker wordt hier als eerste ingepland
-                    </div>
-                    <div style={{ display:'grid', gridTemplateColumns:'repeat(7,1fr)', gap:6 }}>
-                      {['Ma','Di','Wo','Do','Vr','Za','Zo'].map((d, di) => {
-                        const fa = fixedAssignments[s.id]?.[di]
-                        // Get available dept+shift combos from shiftTemplates
-                        const deptOptions = (s.depts || []).flatMap(dk =>
-                          Object.keys(shiftTemplates).map(sh => ({ value:`${dk}|${sh}`, label:`${DEPTS[dk]?.icon||''} ${sh}` }))
-                        )
-                        return (
-                          <div key={d} style={{ textAlign:'center' }}>
-                            <div style={{ fontSize:10, fontWeight:700, color:C.inkMuted, marginBottom:4 }}>{d}</div>
-                            <select value={fa ? `${fa.dept}|${fa.shift_name}` : ''}
-                              onChange={async e => {
-                                const val = e.target.value
-                                if (fa?.id) await supabase.from('fixed_assignments').delete().eq('id', fa.id)
-                                if (val) {
-                                  const [dept, shift_name] = val.split('|')
-                                  await supabase.from('fixed_assignments').insert({
-                                    org_id: orgId, staff_id: s.id, day_of_week: di, dept, shift_name
-                                  })
-                                }
-                                onReload()
-                              }}
-                              style={{ width:'100%', fontSize:9, padding:'4px 2px', borderRadius:6,
-                                border:`1px solid ${fa ? C.jade+'66' : C.border}`,
-                                background: fa ? C.jadeSoft : C.surfaceAlt,
-                                color: fa ? C.jade : C.inkMuted,
-                                fontWeight: fa ? 700 : 400 }}>
-                              <option value=''>—</option>
-                              {deptOptions.map(o => (
-                                <option key={o.value} value={o.value}>{o.label}</option>
-                              ))}
-                            </select>
-                          </div>
-                        )
-                      })}
-                    </div>
-                    <div style={{ color:C.inkMuted, fontSize:11, marginTop:8 }}>
-                      De scheduler plant deze medewerker altijd als eerste in op de geselecteerde dag en dienst.
-                    </div>
-                  </div>
-                )}
               </div>
             </div>
           </Card>
