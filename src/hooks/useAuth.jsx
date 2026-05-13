@@ -10,7 +10,6 @@ export function AuthProvider({ children }) {
 
   useEffect(() => {
     supabase.auth.getSession().then(({ data: { session } }) => {
-      console.log('[AUTH] getSession:', session?.user?.email || 'no session')
       setSession(session)
       if (session) {
         loadStaff(session.user)
@@ -20,7 +19,6 @@ export function AuthProvider({ children }) {
     })
 
     const { data: { subscription } } = supabase.auth.onAuthStateChange((event, session) => {
-      console.log('[AUTH] onAuthStateChange:', event, session?.user?.email || 'no user')
       setSession(session)
       if (event === 'SIGNED_IN' && session) {
         setLoading(true)
@@ -37,7 +35,6 @@ export function AuthProvider({ children }) {
 
   async function loadStaff(user) {
     if (!user) { setStaff(null); setLoading(false); return }
-    console.log('[AUTH] loadStaff for:', user.email, 'id:', user.id)
 
     const { data: byAuthId } = await supabase
       .from('staff')
@@ -46,15 +43,12 @@ export function AuthProvider({ children }) {
       .eq('is_active', true)
       .maybeSingle()
 
-    console.log('[AUTH] byAuthId result:', byAuthId?.name, 'is_admin:', byAuthId?.is_admin)
-
     if (byAuthId) {
       setStaff(byAuthId)
       setLoading(false)
       return
     }
 
-    // Link by email for staff without auth_id
     const { data: byEmail } = await supabase
       .from('staff')
       .select('*')
@@ -63,8 +57,6 @@ export function AuthProvider({ children }) {
       .eq('is_active', true)
       .maybeSingle()
 
-    console.log('[AUTH] byEmail result:', byEmail?.name, 'is_admin:', byEmail?.is_admin)
-
     if (byEmail) {
       await supabase.from('staff').update({ auth_id: user.id }).eq('id', byEmail.id)
       setStaff({ ...byEmail, auth_id: user.id })
@@ -72,21 +64,18 @@ export function AuthProvider({ children }) {
       return
     }
 
-    console.log('[AUTH] No staff record found!')
     setStaff(null)
     setLoading(false)
   }
 
   async function signIn(email, password) {
-    console.log('[AUTH] signIn:', email)
     setLoading(true)
     const { error } = await supabase.auth.signInWithPassword({ email, password })
-    if (error) { setLoading(false); }
+    if (error) setLoading(false)
     return { error }
   }
 
   async function signOut() {
-    console.log('[AUTH] signOut')
     setStaff(null)
     setLoading(false)
     Object.keys(localStorage).forEach(key => {
