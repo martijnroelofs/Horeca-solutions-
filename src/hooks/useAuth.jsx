@@ -9,18 +9,23 @@ export function AuthProvider({ children }) {
   const [loading, setLoading] = useState(true)
 
   useEffect(() => {
+    // Initial session check
     supabase.auth.getSession().then(({ data: { session } }) => {
       setSession(session)
-      if (session) loadStaff(session.user)
-      else setLoading(false)
-    })
-
-    const { data: { subscription } } = supabase.auth.onAuthStateChange((_event, session) => {
-      setSession(session)
       if (session) {
-        setLoading(true)
         loadStaff(session.user)
       } else {
+        setLoading(false)
+      }
+    })
+
+    const { data: { subscription } } = supabase.auth.onAuthStateChange((event, session) => {
+      setSession(session)
+      if (event === 'SIGNED_IN' && session) {
+        setLoading(true)
+        setStaff(null)
+        loadStaff(session.user)
+      } else if (event === 'SIGNED_OUT') {
         setStaff(null)
         setLoading(false)
       }
@@ -32,7 +37,6 @@ export function AuthProvider({ children }) {
   async function loadStaff(user) {
     if (!user) { setStaff(null); setLoading(false); return }
 
-    // Try to find by auth_id first
     const { data: byAuthId } = await supabase
       .from('staff')
       .select('*')
@@ -46,7 +50,7 @@ export function AuthProvider({ children }) {
       return
     }
 
-    // Try to link by email (staff created before they logged in)
+    // Link by email for staff without auth_id
     const { data: byEmail } = await supabase
       .from('staff')
       .select('*')
@@ -62,24 +66,20 @@ export function AuthProvider({ children }) {
       return
     }
 
-    // No staff record found
     setStaff(null)
     setLoading(false)
   }
 
   async function signIn(email, password) {
-    const { data, error } = await supabase.auth.signInWithPassword({ email, password })
-    if (!error && data?.user) {
-      // Force fresh load to prevent stale session state
-      await loadStaff(data.user)
-    }
+    setLoading(true)
+    const { error } = await supabase.auth.signInWithPassword({ email, password })
+    if (error) setLoading(false)
     return { error }
   }
 
   async function signOut() {
     setStaff(null)
     setLoading(false)
-    // Clear Supabase session storage keys
     Object.keys(localStorage).forEach(key => {
       if (key.startsWith('sb-') || key.includes('supabase')) localStorage.removeItem(key)
     })
