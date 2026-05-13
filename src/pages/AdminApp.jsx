@@ -67,6 +67,7 @@ export default function AdminApp() {
   const [settings, setSettings] = useState({})
   const [generating, setGenerating] = useState(false)
   const [openShifts, setOpenShifts] = useState([])
+  const [fixedAssignments, setFixedAssignments] = useState({}) // { staffId: { dow: {id,dept,shift_name} } }
   const [rosterGaps, setRosterGaps] = useState([]) // unfilled template slots
   const [recurringPeaks, setRecurringPeaks] = useState({ 4:4, 5:7, 6:2 })
   const [scheduleMode, setScheduleMode] = useState(50) // 0=min cost, 100=max quality // Fri eve, Sat all, Sun midday
@@ -174,7 +175,7 @@ export default function AdminApp() {
       loadShifts(), loadTemplateSlots(defaultTemplateId), 
       loadPeaks(), loadHolidays(), loadAssignments(),
       loadLeaves(), loadSwaps(), loadAvailability(),
-      loadCapacities(), loadSettings(), loadOvertime(), loadOpenShifts(),
+      loadCapacities(), loadSettings(), loadOvertime(), loadOpenShifts(), loadFixedAssignments(),
     ])
     setLoading(false)
   }
@@ -206,12 +207,10 @@ export default function AdminApp() {
   }
   async function loadTemplateSlots(templateId) {
     const tid = templateId || activeTemplateId
-    console.log('loadTemplateSlots with tid:', tid)
     const query = supabase.from('template_slots').select('*').eq('org_id', orgId)
     const { data } = tid
       ? await query.eq('bezetting_template_id', tid)
       : await query.not('bezetting_template_id', 'is', null)
-    console.log('loaded slots:', data?.length, 'for template:', tid)
     setTemplateSlots(data || [])
   }
   async function loadPeaks() {
@@ -323,6 +322,17 @@ export default function AdminApp() {
     return gaps
   }
 
+  async function loadFixedAssignments() {
+    const { data } = await supabase.from('fixed_assignments')
+      .select('*').eq('org_id', orgId)
+    const map = {}
+    ;(data || []).forEach(fa => {
+      if (!map[fa.staff_id]) map[fa.staff_id] = {}
+      map[fa.staff_id][fa.day_of_week] = { id: fa.id, dept: fa.dept, shift_name: fa.shift_name }
+    })
+    setFixedAssignments(map)
+  }
+
   async function loadOpenShifts() {
     const { data } = await supabase.from('open_shifts')
       .select('*, original_staff:staff!original_staff_id(name,color), claimed_by:staff!claimed_by_id(name,color)')
@@ -360,6 +370,7 @@ export default function AdminApp() {
       const result = generateSchedule({
         staff: allStaff,
         shiftTemplates,
+        fixedAssignments,
         templateSlots,
         peakMoments,
         recurringPeaks,
@@ -414,10 +425,10 @@ export default function AdminApp() {
   async function handleGenerate() {
     setGenerating(true)
     try {
-      console.log('templateSlots count:', templateSlots.length, templateSlots.map(s => `${s.day_of_week}/${s.dept}/${s.shift_name}`))
       const result = generateSchedule({
         staff: allStaff,
         shiftTemplates,
+        fixedAssignments,
         templateSlots,
         peakMoments,
         recurringPeaks,
@@ -852,6 +863,8 @@ export default function AdminApp() {
             currentSchedule={currentSchedule}
             overtimeLog={overtimeLog}
             availPatterns={availPatterns}
+            fixedAssignments={fixedAssignments}
+            shiftTemplates={shiftTemplates}
           />
         )}
 
@@ -1605,11 +1618,12 @@ function AanvragenTab({ pendingLeaves, pendingSwaps, onLeave, onSwap }) {
   )
 }
 
-function PersoneelTab({ allStaff, capacities, orgId, onReload, show, shiftTemplates, currentSchedule, overtimeLog, availPatterns }) {
+function PersoneelTab({ allStaff, capacities, orgId, onReload, show, shiftTemplates, currentSchedule, overtimeLog, availPatterns, fixedAssignments }) {
   const [modal, setModal] = useState(false)
   const [editId, setEditId] = useState(null)
   const [capId, setCapId] = useState(null)
   const [availId, setAvailId] = useState(null)
+  const [fixedId, setFixedId] = useState(null)
   const [localScores, setLocalScores] = useState({})
   // Sync localScores when capacities are loaded from DB
   useEffect(() => { setLocalScores(capacities) }, [capacities])
@@ -1726,6 +1740,8 @@ function PersoneelTab({ allStaff, capacities, orgId, onReload, show, shiftTempla
                     style={{ ...btn(), flex:1, background:capId===s.id?C.ink:'#EBE7DE', color:capId===s.id?C.white:C.inkMid, padding:'7px', fontSize:12, borderRadius:9 }}>⭐ Capaciteit</button>
                     <button onClick={() => setAvailId(availId===s.id?null:s.id)}
                     style={{ ...btn(), flex:1, background:availId===s.id?C.sky:'#EBE7DE', color:availId===s.id?C.white:C.inkMid, padding:'7px', fontSize:12, borderRadius:9 }}>📅 Beschikbaar</button>
+                    <button onClick={() => setFixedId(fixedId===s.id?null:s.id)}
+                    style={{ ...btn(), flex:1, background:fixedId===s.id?C.jade:'#EBE7DE', color:fixedId===s.id?C.white:C.inkMid, padding:'7px', fontSize:12, borderRadius:9 }}>📌 Vaste dienst</button>
                   <button onClick={async () => { await supabase.from('staff').update({ is_active:!s.is_active }).eq('id', s.id); onReload() }}
                     style={{ ...btn(), flex:1, background:s.is_active?C.crimsonSoft:C.jadeSoft, color:s.is_active?C.crimson:C.jade, padding:'7px', fontSize:12, borderRadius:9 }}>
                     {s.is_active ? 'Deactiveren' : 'Activeren'}
@@ -1856,6 +1872,53 @@ function PersoneelTab({ allStaff, capacities, orgId, onReload, show, shiftTempla
                       <span><span style={{ color:C.crimson }}>■</span> Niet beschikbaar</span>
                       <span><span style={{ color:C.inkMuted }}>■</span> Niet ingevuld</span>
                       <span style={{ color:C.inkMuted }}>O=Ochtend M=Middag A=Avond</span>
+                    </div>
+                  </div>
+                )}
+
+                {fixedId === s.id && (
+                  <div style={{ marginTop:12, paddingTop:12, borderTop:`1px solid #EEE9E0` }}>
+                    <div style={{ fontWeight:700, fontSize:13, marginBottom:10, color:C.inkMid }}>
+                      📌 Vaste diensten — deze medewerker wordt hier als eerste ingepland
+                    </div>
+                    <div style={{ display:'grid', gridTemplateColumns:'repeat(7,1fr)', gap:6 }}>
+                      {['Ma','Di','Wo','Do','Vr','Za','Zo'].map((d, di) => {
+                        const fa = fixedAssignments[s.id]?.[di]
+                        // Get available dept+shift combos from shiftTemplates
+                        const deptOptions = (s.depts || []).flatMap(dk =>
+                          Object.keys(shiftTemplates).map(sh => ({ value:`${dk}|${sh}`, label:`${DEPTS[dk]?.icon||''} ${sh}` }))
+                        )
+                        return (
+                          <div key={d} style={{ textAlign:'center' }}>
+                            <div style={{ fontSize:10, fontWeight:700, color:C.inkMuted, marginBottom:4 }}>{d}</div>
+                            <select value={fa ? `${fa.dept}|${fa.shift_name}` : ''}
+                              onChange={async e => {
+                                const val = e.target.value
+                                if (fa?.id) await supabase.from('fixed_assignments').delete().eq('id', fa.id)
+                                if (val) {
+                                  const [dept, shift_name] = val.split('|')
+                                  await supabase.from('fixed_assignments').insert({
+                                    org_id: orgId, staff_id: s.id, day_of_week: di, dept, shift_name
+                                  })
+                                }
+                                onReload()
+                              }}
+                              style={{ width:'100%', fontSize:9, padding:'4px 2px', borderRadius:6,
+                                border:`1px solid ${fa ? C.jade+'66' : C.border}`,
+                                background: fa ? C.jadeSoft : C.surfaceAlt,
+                                color: fa ? C.jade : C.inkMuted,
+                                fontWeight: fa ? 700 : 400 }}>
+                              <option value=''>—</option>
+                              {deptOptions.map(o => (
+                                <option key={o.value} value={o.value}>{o.label}</option>
+                              ))}
+                            </select>
+                          </div>
+                        )
+                      })}
+                    </div>
+                    <div style={{ color:C.inkMuted, fontSize:11, marginTop:8 }}>
+                      De scheduler plant deze medewerker altijd als eerste in op de geselecteerde dag en dienst.
                     </div>
                   </div>
                 )}
@@ -2052,11 +2115,23 @@ function PersoneelTab({ allStaff, capacities, orgId, onReload, show, shiftTempla
 
 function ZiekteTab({ allStaff, currentSchedule, currentWeek, shiftTemplates, orgId, onReload, show }) {
   const [openShifts, setOpenShifts] = useState([])
+  const [fixedAssignments, setFixedAssignments] = useState({}) // { staffId: { dow: {id,dept,shift_name} } }
   const [sickModal, setSickModal] = useState(false)
   const [sickForm, setSickForm] = useState({ staffId:'', di:0 })
   const [claimModal, setClaimModal] = useState(null)
 
   useEffect(() => { loadOpenShifts() }, [currentWeek.monday])
+
+  async function loadFixedAssignments() {
+    const { data } = await supabase.from('fixed_assignments')
+      .select('*').eq('org_id', orgId)
+    const map = {}
+    ;(data || []).forEach(fa => {
+      if (!map[fa.staff_id]) map[fa.staff_id] = {}
+      map[fa.staff_id][fa.day_of_week] = { id: fa.id, dept: fa.dept, shift_name: fa.shift_name }
+    })
+    setFixedAssignments(map)
+  }
 
   async function loadOpenShifts() {
     const { data } = await supabase.from('open_shifts')
