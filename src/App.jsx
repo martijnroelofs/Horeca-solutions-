@@ -9,7 +9,6 @@ import SetupPage from './pages/SetupPage'
 function AppRoutes() {
   const { staff, loading } = useAuth()
 
-  // Register service worker
   useEffect(() => {
     if ('serviceWorker' in navigator) {
       navigator.serviceWorker.register('/sw.js').catch(console.error)
@@ -39,7 +38,9 @@ function AppRoutes() {
       <Route path="/admin/*" element={
         staff.is_admin ? <AdminApp /> : <Navigate to="/rooster" />
       } />
-      <Route path="/rooster/*" element={<StaffApp />} />
+      <Route path="/rooster/*" element={
+        staff.is_admin ? <Navigate to="/admin" /> : <StaffApp />
+      } />
       <Route path="*" element={
         <Navigate to={staff.is_admin ? '/admin' : '/rooster'} />
       } />
