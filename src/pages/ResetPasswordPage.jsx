@@ -17,38 +17,19 @@ export default function ResetPasswordPage() {
   const [loading, setLoading] = useState(false)
   const [done, setDone] = useState(false)
   const [error, setError] = useState('')
-  const [ready, setReady] = useState(false)
+
+  // Als er een code of token in de URL staat, direct het formulier tonen
+  const hasToken = window.location.search.includes('code=') ||
+                   window.location.hash.includes('access_token')
 
   useEffect(() => {
-    async function init() {
-      // Handle PKCE flow: ?code= in URL
-      const params = new URLSearchParams(window.location.search)
-      const code = params.get('code')
-      if (code) {
-        const { data, error } = await supabase.auth.exchangeCodeForSession(code)
-        if (data?.session) { setReady(true); return }
-        if (error) { setError('Ongeldige of verlopen link. Vraag een nieuwe reset aan.'); return }
+    // Laat Supabase de token/code automatisch verwerken
+    const { data: { subscription } } = supabase.auth.onAuthStateChange((event) => {
+      if (event === 'SIGNED_OUT') {
+        // Na reset doorsturen
       }
-
-      // Handle implicit flow: #access_token= in hash
-      const hash = window.location.hash
-      if (hash.includes('access_token')) {
-        // Supabase handles this automatically, wait for event
-      }
-
-      // Check existing session
-      const { data: { session } } = await supabase.auth.getSession()
-      if (session) { setReady(true); return }
-
-      // Listen for auth events
-      const { data: { subscription } } = supabase.auth.onAuthStateChange((event, session) => {
-        if ((event === 'PASSWORD_RECOVERY' || event === 'SIGNED_IN') && session) {
-          setReady(true)
-        }
-      })
-      return () => subscription.unsubscribe()
-    }
-    init()
+    })
+    return () => subscription.unsubscribe()
   }, [])
 
   async function handleSubmit(e) {
@@ -57,9 +38,17 @@ export default function ResetPasswordPage() {
     if (password !== confirm) { setError('Wachtwoorden komen niet overeen'); return }
     setLoading(true)
     setError('')
+
+    // Eerst proberen sessie te krijgen via code exchange als nog niet gedaan
+    const params = new URLSearchParams(window.location.search)
+    const code = params.get('code')
+    if (code) {
+      await supabase.auth.exchangeCodeForSession(code)
+    }
+
     const { error } = await supabase.auth.updateUser({ password })
     if (error) {
-      setError(error.message === 'Auth session missing!'
+      setError(error.message.includes('session')
         ? 'Sessie verlopen. Vraag de admin om een nieuwe reset link.'
         : 'Fout: ' + error.message)
       setLoading(false)
@@ -85,7 +74,9 @@ export default function ResetPasswordPage() {
           boxShadow: `0 0 50px ${C.gold}55`,
         }}>🍽</div>
         <div style={{ color: C.white, fontSize: 28, fontWeight: 900 }}>RoosterAI</div>
-        <div style={{ color: 'rgba(255,255,255,0.4)', fontSize: 13, marginTop: 6 }}>Wachtwoord instellen</div>
+        <div style={{ color: 'rgba(255,255,255,0.4)', fontSize: 13, marginTop: 6 }}>
+          Wachtwoord instellen
+        </div>
       </div>
 
       <div style={{ width: '100%', maxWidth: 360 }}>
@@ -93,18 +84,17 @@ export default function ResetPasswordPage() {
           <div style={{ textAlign: 'center', color: C.white }}>
             <div style={{ fontSize: 48, marginBottom: 16 }}>✅</div>
             <div style={{ fontWeight: 700, fontSize: 18 }}>Wachtwoord ingesteld!</div>
-            <div style={{ color: 'rgba(255,255,255,0.5)', marginTop: 8 }}>Je wordt doorgestuurd...</div>
+            <div style={{ color: 'rgba(255,255,255,0.5)', marginTop: 8 }}>
+              Je wordt doorgestuurd naar de loginpagina...
+            </div>
           </div>
-        ) : error && !ready ? (
-          <div style={{ background: 'rgba(168,40,28,0.2)', border: '1px solid rgba(168,40,28,0.4)',
-            borderRadius: 12, padding: '16px 20px', color: '#FF8C72', textAlign: 'center' }}>
-            <div style={{ fontSize: 32, marginBottom: 12 }}>⚠️</div>
-            <div style={{ fontWeight: 700 }}>{error}</div>
-          </div>
-        ) : !ready ? (
+        ) : !hasToken ? (
           <div style={{ textAlign: 'center', color: 'rgba(255,255,255,0.5)', padding: 40 }}>
-            <div style={{ fontSize: 32, marginBottom: 12 }}>⏳</div>
-            Bezig met laden...
+            <div style={{ fontSize: 32, marginBottom: 12 }}>⚠️</div>
+            <div style={{ color: C.white, fontWeight: 700, marginBottom: 8 }}>
+              Geen reset link gevonden
+            </div>
+            Gebruik de link uit de e-mail om je wachtwoord in te stellen.
           </div>
         ) : (
           <form onSubmit={handleSubmit}>
