@@ -3,8 +3,7 @@ import { supabase } from '../lib/supabase'
 
 const C = {
   ink: '#1A2340', gold: '#C4882A', white: '#FFFFFF',
-  border: '#DDD8CC', inkMuted: '#8A90A8', jade: '#2A7D5C',
-  crimson: '#A8281C',
+  border: '#DDD8CC', inkMuted: '#8A90A8',
 }
 
 const btn = (extra={}) => ({
@@ -21,19 +20,35 @@ export default function ResetPasswordPage() {
   const [ready, setReady] = useState(false)
 
   useEffect(() => {
-    // Check if we already have a recovery session
-    supabase.auth.getSession().then(({ data: { session } }) => {
-      if (session) setReady(true)
-    })
-
-    // Also listen for the PASSWORD_RECOVERY event
-    const { data: { subscription } } = supabase.auth.onAuthStateChange((event, session) => {
-      if (event === 'PASSWORD_RECOVERY' || (event === 'SIGNED_IN' && session)) {
-        setReady(true)
+    async function init() {
+      // Handle PKCE flow: ?code= in URL
+      const params = new URLSearchParams(window.location.search)
+      const code = params.get('code')
+      if (code) {
+        const { data, error } = await supabase.auth.exchangeCodeForSession(code)
+        if (data?.session) { setReady(true); return }
+        if (error) { setError('Ongeldige of verlopen link. Vraag een nieuwe reset aan.'); return }
       }
-    })
 
-    return () => subscription.unsubscribe()
+      // Handle implicit flow: #access_token= in hash
+      const hash = window.location.hash
+      if (hash.includes('access_token')) {
+        // Supabase handles this automatically, wait for event
+      }
+
+      // Check existing session
+      const { data: { session } } = await supabase.auth.getSession()
+      if (session) { setReady(true); return }
+
+      // Listen for auth events
+      const { data: { subscription } } = supabase.auth.onAuthStateChange((event, session) => {
+        if ((event === 'PASSWORD_RECOVERY' || event === 'SIGNED_IN') && session) {
+          setReady(true)
+        }
+      })
+      return () => subscription.unsubscribe()
+    }
+    init()
   }, [])
 
   async function handleSubmit(e) {
@@ -44,13 +59,14 @@ export default function ResetPasswordPage() {
     setError('')
     const { error } = await supabase.auth.updateUser({ password })
     if (error) {
-      setError('Fout: ' + error.message)
+      setError(error.message === 'Auth session missing!'
+        ? 'Sessie verlopen. Vraag de admin om een nieuwe reset link.'
+        : 'Fout: ' + error.message)
       setLoading(false)
     } else {
       setDone(true)
-      // Sign out so user can log in fresh
       await supabase.auth.signOut()
-      setTimeout(() => { window.location.href = '/' }, 2000)
+      setTimeout(() => { window.location.href = '/' }, 2500)
     }
   }
 
@@ -69,9 +85,7 @@ export default function ResetPasswordPage() {
           boxShadow: `0 0 50px ${C.gold}55`,
         }}>🍽</div>
         <div style={{ color: C.white, fontSize: 28, fontWeight: 900 }}>RoosterAI</div>
-        <div style={{ color: 'rgba(255,255,255,0.4)', fontSize: 13, marginTop: 6 }}>
-          Wachtwoord instellen
-        </div>
+        <div style={{ color: 'rgba(255,255,255,0.4)', fontSize: 13, marginTop: 6 }}>Wachtwoord instellen</div>
       </div>
 
       <div style={{ width: '100%', maxWidth: 360 }}>
@@ -79,21 +93,18 @@ export default function ResetPasswordPage() {
           <div style={{ textAlign: 'center', color: C.white }}>
             <div style={{ fontSize: 48, marginBottom: 16 }}>✅</div>
             <div style={{ fontWeight: 700, fontSize: 18 }}>Wachtwoord ingesteld!</div>
-            <div style={{ color: 'rgba(255,255,255,0.5)', marginTop: 8 }}>
-              Je wordt doorgestuurd naar de loginpagina...
-            </div>
+            <div style={{ color: 'rgba(255,255,255,0.5)', marginTop: 8 }}>Je wordt doorgestuurd...</div>
+          </div>
+        ) : error && !ready ? (
+          <div style={{ background: 'rgba(168,40,28,0.2)', border: '1px solid rgba(168,40,28,0.4)',
+            borderRadius: 12, padding: '16px 20px', color: '#FF8C72', textAlign: 'center' }}>
+            <div style={{ fontSize: 32, marginBottom: 12 }}>⚠️</div>
+            <div style={{ fontWeight: 700 }}>{error}</div>
           </div>
         ) : !ready ? (
           <div style={{ textAlign: 'center', color: 'rgba(255,255,255,0.5)', padding: 40 }}>
             <div style={{ fontSize: 32, marginBottom: 12 }}>⏳</div>
             Bezig met laden...
-            <div style={{ marginTop: 20 }}>
-              <button onClick={() => setReady(true)}
-                style={{ ...btn(), background: 'rgba(255,255,255,0.1)', color: 'rgba(255,255,255,0.5)',
-                  padding: '8px 16px', fontSize: 12 }}>
-                Toch doorgaan →
-              </button>
-            </div>
           </div>
         ) : (
           <form onSubmit={handleSubmit}>
@@ -122,16 +133,13 @@ export default function ResetPasswordPage() {
             {error && (
               <div style={{ background: 'rgba(168,40,28,0.2)', border: '1px solid rgba(168,40,28,0.4)',
                 borderRadius: 10, padding: '10px 14px', marginBottom: 16,
-                color: '#FF8C72', fontSize: 13, fontWeight: 600 }}>
-                {error}
-              </div>
+                color: '#FF8C72', fontSize: 13, fontWeight: 600 }}>{error}</div>
             )}
             <button type="submit" disabled={loading} style={{
               width: '100%', padding: 14, borderRadius: 12, border: 'none',
               background: loading ? 'rgba(255,255,255,0.2)' : C.gold,
               color: C.white, fontSize: 15, fontWeight: 700,
-              cursor: loading ? 'not-allowed' : 'pointer',
-              fontFamily: 'inherit',
+              cursor: loading ? 'not-allowed' : 'pointer', fontFamily: 'inherit',
             }}>
               {loading ? 'Opslaan...' : 'Wachtwoord instellen'}
             </button>
