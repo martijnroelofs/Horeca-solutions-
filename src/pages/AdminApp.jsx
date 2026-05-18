@@ -1787,6 +1787,15 @@ function PersoneelTab({ allStaff, capacities, orgId, onReload, show, shiftTempla
                     style={{ ...btn(), flex:1, background:s.is_active?C.crimsonSoft:C.jadeSoft, color:s.is_active?C.crimson:C.jade, padding:'7px', fontSize:12, borderRadius:9 }}>
                     {s.is_active ? 'Deactiveren' : 'Activeren'}
                   </button>
+                  <button onClick={async () => {
+                    const { error } = await supabase.auth.resetPasswordForEmail(s.email, {
+                      redirectTo: window.location.origin + '/reset-password'
+                    })
+                    if (error) show('Fout: ' + error.message)
+                    else show(`✓ Reset link verstuurd naar ${s.email}`)
+                  }} style={{ ...btn(), flex:1, background:'#EBE7DE', color:C.inkMid, padding:'7px', fontSize:12, borderRadius:9 }}>
+                    🔑 Reset wachtwoord
+                  </button>
                   {!s.is_active && (
                     <button onClick={async () => {
                       if (!window.confirm(`Weet je zeker dat je ${s.name} permanent wilt verwijderen? Dit kan niet ongedaan worden gemaakt.`)) return
