@@ -5,6 +5,7 @@ import LoginPage from './pages/LoginPage'
 import AdminApp from './pages/AdminApp'
 import StaffApp from './pages/StaffApp'
 import SetupPage from './pages/SetupPage'
+import ResetPasswordPage from './pages/ResetPasswordPage'
 
 function AppRoutes() {
   const { staff, loading } = useAuth()
@@ -29,12 +30,14 @@ function AppRoutes() {
   if (!staff) return (
     <Routes>
       <Route path="/setup" element={<SetupPage />} />
+      <Route path="/reset-password" element={<ResetPasswordPage />} />
       <Route path="*" element={<LoginPage />} />
     </Routes>
   )
 
   return (
     <Routes>
+      <Route path="/reset-password" element={<ResetPasswordPage />} />
       <Route path="/admin/*" element={
         staff.is_admin ? <AdminApp /> : <Navigate to="/rooster" />
       } />
