@@ -21,10 +21,19 @@ export default function ResetPasswordPage() {
   const [ready, setReady] = useState(false)
 
   useEffect(() => {
-    // Supabase puts the token in the URL hash after redirect
-    supabase.auth.onAuthStateChange((event) => {
-      if (event === 'PASSWORD_RECOVERY') setReady(true)
+    // Check if we already have a recovery session
+    supabase.auth.getSession().then(({ data: { session } }) => {
+      if (session) setReady(true)
     })
+
+    // Also listen for the PASSWORD_RECOVERY event
+    const { data: { subscription } } = supabase.auth.onAuthStateChange((event, session) => {
+      if (event === 'PASSWORD_RECOVERY' || (event === 'SIGNED_IN' && session)) {
+        setReady(true)
+      }
+    })
+
+    return () => subscription.unsubscribe()
   }, [])
 
   async function handleSubmit(e) {
@@ -39,6 +48,8 @@ export default function ResetPasswordPage() {
       setLoading(false)
     } else {
       setDone(true)
+      // Sign out so user can log in fresh
+      await supabase.auth.signOut()
       setTimeout(() => { window.location.href = '/' }, 2000)
     }
   }
@@ -69,13 +80,20 @@ export default function ResetPasswordPage() {
             <div style={{ fontSize: 48, marginBottom: 16 }}>✅</div>
             <div style={{ fontWeight: 700, fontSize: 18 }}>Wachtwoord ingesteld!</div>
             <div style={{ color: 'rgba(255,255,255,0.5)', marginTop: 8 }}>
-              Je wordt doorgestuurd...
+              Je wordt doorgestuurd naar de loginpagina...
             </div>
           </div>
         ) : !ready ? (
           <div style={{ textAlign: 'center', color: 'rgba(255,255,255,0.5)', padding: 40 }}>
             <div style={{ fontSize: 32, marginBottom: 12 }}>⏳</div>
             Bezig met laden...
+            <div style={{ marginTop: 20 }}>
+              <button onClick={() => setReady(true)}
+                style={{ ...btn(), background: 'rgba(255,255,255,0.1)', color: 'rgba(255,255,255,0.5)',
+                  padding: '8px 16px', fontSize: 12 }}>
+                Toch doorgaan →
+              </button>
+            </div>
           </div>
         ) : (
           <form onSubmit={handleSubmit}>
