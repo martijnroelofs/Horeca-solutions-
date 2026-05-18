@@ -1,9 +1,8 @@
-import { useState, useEffect } from 'react'
+import { useState } from 'react'
 import { supabase } from '../lib/supabase'
 
 const C = {
   ink: '#1A2340', gold: '#C4882A', white: '#FFFFFF',
-  border: '#DDD8CC', inkMuted: '#8A90A8',
 }
 
 const btn = (extra={}) => ({
@@ -18,19 +17,8 @@ export default function ResetPasswordPage() {
   const [done, setDone] = useState(false)
   const [error, setError] = useState('')
 
-  // Als er een code of token in de URL staat, direct het formulier tonen
-  const hasToken = window.location.search.includes('code=') ||
-                   window.location.hash.includes('access_token')
-
-  useEffect(() => {
-    // Laat Supabase de token/code automatisch verwerken
-    const { data: { subscription } } = supabase.auth.onAuthStateChange((event) => {
-      if (event === 'SIGNED_OUT') {
-        // Na reset doorsturen
-      }
-    })
-    return () => subscription.unsubscribe()
-  }, [])
+  // Debug: show current URL info
+  const urlInfo = window.location.search + window.location.hash
 
   async function handleSubmit(e) {
     e.preventDefault()
@@ -39,18 +27,13 @@ export default function ResetPasswordPage() {
     setLoading(true)
     setError('')
 
-    // Eerst proberen sessie te krijgen via code exchange als nog niet gedaan
-    const params = new URLSearchParams(window.location.search)
-    const code = params.get('code')
-    if (code) {
-      await supabase.auth.exchangeCodeForSession(code)
-    }
+    // Try PKCE code exchange
+    const code = new URLSearchParams(window.location.search).get('code')
+    if (code) await supabase.auth.exchangeCodeForSession(code)
 
     const { error } = await supabase.auth.updateUser({ password })
     if (error) {
-      setError(error.message.includes('session')
-        ? 'Sessie verlopen. Vraag de admin om een nieuwe reset link.'
-        : 'Fout: ' + error.message)
+      setError('Fout: ' + error.message + ' | URL: ' + urlInfo)
       setLoading(false)
     } else {
       setDone(true)
@@ -66,17 +49,14 @@ export default function ResetPasswordPage() {
       alignItems: 'center', justifyContent: 'center',
       padding: 24, fontFamily: "'DM Sans','Segoe UI',sans-serif",
     }}>
-      <div style={{ textAlign: 'center', marginBottom: 40 }}>
+      <div style={{ textAlign: 'center', marginBottom: 32 }}>
         <div style={{
           width: 72, height: 72, borderRadius: 22, background: C.gold,
           fontSize: 32, margin: '0 auto 14px', display: 'flex',
           alignItems: 'center', justifyContent: 'center',
-          boxShadow: `0 0 50px ${C.gold}55`,
         }}>🍽</div>
         <div style={{ color: C.white, fontSize: 28, fontWeight: 900 }}>RoosterAI</div>
-        <div style={{ color: 'rgba(255,255,255,0.4)', fontSize: 13, marginTop: 6 }}>
-          Wachtwoord instellen
-        </div>
+        <div style={{ color: 'rgba(255,255,255,0.4)', fontSize: 13, marginTop: 6 }}>Wachtwoord instellen</div>
       </div>
 
       <div style={{ width: '100%', maxWidth: 360 }}>
@@ -84,24 +64,12 @@ export default function ResetPasswordPage() {
           <div style={{ textAlign: 'center', color: C.white }}>
             <div style={{ fontSize: 48, marginBottom: 16 }}>✅</div>
             <div style={{ fontWeight: 700, fontSize: 18 }}>Wachtwoord ingesteld!</div>
-            <div style={{ color: 'rgba(255,255,255,0.5)', marginTop: 8 }}>
-              Je wordt doorgestuurd naar de loginpagina...
-            </div>
-          </div>
-        ) : !hasToken ? (
-          <div style={{ textAlign: 'center', color: 'rgba(255,255,255,0.5)', padding: 40 }}>
-            <div style={{ fontSize: 32, marginBottom: 12 }}>⚠️</div>
-            <div style={{ color: C.white, fontWeight: 700, marginBottom: 8 }}>
-              Geen reset link gevonden
-            </div>
-            Gebruik de link uit de e-mail om je wachtwoord in te stellen.
+            <div style={{ color: 'rgba(255,255,255,0.5)', marginTop: 8 }}>Je wordt doorgestuurd...</div>
           </div>
         ) : (
           <form onSubmit={handleSubmit}>
             <div style={{ marginBottom: 14 }}>
-              <div style={{ fontSize: 12, fontWeight: 700, color: 'rgba(255,255,255,0.5)', marginBottom: 6, letterSpacing: '0.04em' }}>
-                NIEUW WACHTWOORD
-              </div>
+              <div style={{ fontSize: 12, fontWeight: 700, color: 'rgba(255,255,255,0.5)', marginBottom: 6, letterSpacing: '0.04em' }}>NIEUW WACHTWOORD</div>
               <input type="password" value={password} onChange={e => setPassword(e.target.value)}
                 placeholder="Minimaal 6 tekens" required autoFocus
                 style={{ width: '100%', padding: '12px 14px', borderRadius: 12,
@@ -110,9 +78,7 @@ export default function ResetPasswordPage() {
                   fontSize: 15, fontFamily: 'inherit', boxSizing: 'border-box' }}/>
             </div>
             <div style={{ marginBottom: 24 }}>
-              <div style={{ fontSize: 12, fontWeight: 700, color: 'rgba(255,255,255,0.5)', marginBottom: 6, letterSpacing: '0.04em' }}>
-                BEVESTIG WACHTWOORD
-              </div>
+              <div style={{ fontSize: 12, fontWeight: 700, color: 'rgba(255,255,255,0.5)', marginBottom: 6, letterSpacing: '0.04em' }}>BEVESTIG WACHTWOORD</div>
               <input type="password" value={confirm} onChange={e => setConfirm(e.target.value)}
                 placeholder="Herhaal wachtwoord" required
                 style={{ width: '100%', padding: '12px 14px', borderRadius: 12,
@@ -121,9 +87,8 @@ export default function ResetPasswordPage() {
                   fontSize: 15, fontFamily: 'inherit', boxSizing: 'border-box' }}/>
             </div>
             {error && (
-              <div style={{ background: 'rgba(168,40,28,0.2)', border: '1px solid rgba(168,40,28,0.4)',
-                borderRadius: 10, padding: '10px 14px', marginBottom: 16,
-                color: '#FF8C72', fontSize: 13, fontWeight: 600 }}>{error}</div>
+              <div style={{ background: 'rgba(168,40,28,0.2)', borderRadius: 10, padding: '10px 14px',
+                marginBottom: 16, color: '#FF8C72', fontSize: 12 }}>{error}</div>
             )}
             <button type="submit" disabled={loading} style={{
               width: '100%', padding: 14, borderRadius: 12, border: 'none',
@@ -133,6 +98,9 @@ export default function ResetPasswordPage() {
             }}>
               {loading ? 'Opslaan...' : 'Wachtwoord instellen'}
             </button>
+            <div style={{ color: 'rgba(255,255,255,0.2)', fontSize: 10, marginTop: 12, wordBreak: 'break-all' }}>
+              URL: {urlInfo || '(leeg)'}
+            </div>
           </form>
         )}
       </div>
