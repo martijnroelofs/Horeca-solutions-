@@ -1,5 +1,5 @@
 import { useEffect } from 'react'
-import { BrowserRouter, Routes, Route, Navigate } from 'react-router-dom'
+import { BrowserRouter, Routes, Route, Navigate, useLocation } from 'react-router-dom'
 import { AuthProvider, useAuth } from './hooks/useAuth'
 import LoginPage from './pages/LoginPage'
 import AdminApp from './pages/AdminApp'
@@ -9,12 +9,18 @@ import ResetPasswordPage from './pages/ResetPasswordPage'
 
 function AppRoutes() {
   const { staff, loading } = useAuth()
+  const location = useLocation()
 
   useEffect(() => {
     if ('serviceWorker' in navigator) {
       navigator.serviceWorker.register('/sw.js').catch(console.error)
     }
   }, [])
+
+  // Always show reset page when on /reset-password route
+  if (location.pathname === '/reset-password') {
+    return <ResetPasswordPage />
+  }
 
   if (loading) return (
     <div style={{
@@ -30,14 +36,12 @@ function AppRoutes() {
   if (!staff) return (
     <Routes>
       <Route path="/setup" element={<SetupPage />} />
-      <Route path="/reset-password" element={<ResetPasswordPage />} />
       <Route path="*" element={<LoginPage />} />
     </Routes>
   )
 
   return (
     <Routes>
-      <Route path="/reset-password" element={<ResetPasswordPage />} />
       <Route path="/admin/*" element={
         staff.is_admin ? <AdminApp /> : <Navigate to="/rooster" />
       } />
