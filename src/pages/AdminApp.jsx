@@ -1678,6 +1678,8 @@ function PersoneelTab({ allStaff, capacities, orgId, onReload, show, shiftTempla
 
   async function saveStaff() {
     if (!form.name || !form.email || !form.depts.length) { show('Vul naam, e-mail en afdeling in'); return }
+    const emailValid = /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(form.email)
+    if (!emailValid) { show('Vul een geldig e-mailadres in'); return }
     try {
       if (editId) {
         const { error: updErr } = await supabase.from('staff').update({
@@ -1693,16 +1695,36 @@ function PersoneelTab({ allStaff, capacities, orgId, onReload, show, shiftTempla
         onReload()
         return // early return to skip the modal close below
       } else {
-        // Create staff record only — auth account is created when employee logs in for the first time
-        // Do NOT use signUp here as it would log out the current admin session
-        await supabase.from('staff').insert({
+        // Create staff record and send invite email via Edge Function
+        // First create the staff record
+        const { data: newStaff } = await supabase.from('staff').insert({
           org_id: orgId, auth_id: null,
           name:form.name, email:form.email, role:form.role, color:form.color,
           contract_type:form.contract_type, contract_hours:form.contract_hours,
           min_hours:form.min_hours, max_hours:form.max_hours,
           hourly_rate:form.hourly_rate, depts:form.depts, is_active:true,
           pref_min_days:form.pref_min_days||1, pref_max_days:form.pref_max_days||5,
-        })
+        }).select().single()
+
+        // Send invite email via Edge Function
+        try {
+          const { data: { session } } = await supabase.auth.getSession()
+          const res = await fetch(`${supabase.supabaseUrl}/functions/v1/invite-user`, {
+            method: 'POST',
+            headers: {
+              'Content-Type': 'application/json',
+              'Authorization': `Bearer ${session?.access_token}`
+            },
+            body: JSON.stringify({ email: form.email, name: form.name })
+          })
+          const result = await res.json()
+          if (result.id && newStaff?.id) {
+            await supabase.from('staff').update({ auth_id: result.id }).eq('id', newStaff.id)
+          }
+          show('✓ Medewerker aangemaakt — uitnodiging verstuurd naar ' + form.email)
+        } catch(e) {
+          show('✓ Medewerker aangemaakt — stuur handmatig een reset link via 🔑')
+        }
         show(`✓ ${form.name} toegevoegd — wachtwoord: ${form.password||'(automatisch)'}`)
       }
       setModal(false); setEditId(null); setForm(emptyForm); onReload()
