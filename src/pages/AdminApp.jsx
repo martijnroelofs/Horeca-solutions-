@@ -1715,7 +1715,7 @@ function PersoneelTab({ allStaff, capacities, orgId, onReload, show, shiftTempla
               'Content-Type': 'application/json',
               'Authorization': `Bearer ${session?.access_token}`
             },
-            body: JSON.stringify({ email: form.email, name: form.name })
+            body: JSON.stringify({ email: form.email, name: form.name, password: form.password || undefined })
           })
           const result = await res.json()
           if (result.id && newStaff?.id) {
