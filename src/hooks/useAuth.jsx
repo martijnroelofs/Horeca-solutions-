@@ -7,15 +7,13 @@ export function AuthProvider({ children }) {
   const [session, setSession] = useState(null)
   const [staff, setStaff] = useState(null)
   const [loading, setLoading] = useState(true)
+  const [authError, setAuthError] = useState('')
 
   useEffect(() => {
     supabase.auth.getSession().then(({ data: { session } }) => {
       setSession(session)
-      if (session) {
-        loadStaff(session.user)
-      } else {
-        setLoading(false)
-      }
+      if (session) loadStaff(session.user)
+      else setLoading(false)
     })
 
     const { data: { subscription } } = supabase.auth.onAuthStateChange((event, session) => {
@@ -26,6 +24,7 @@ export function AuthProvider({ children }) {
         loadStaff(session.user)
       } else if (event === 'SIGNED_OUT') {
         setStaff(null)
+        setAuthError('')
         setLoading(false)
       }
     })
@@ -36,6 +35,7 @@ export function AuthProvider({ children }) {
   async function loadStaff(user) {
     if (!user) { setStaff(null); setLoading(false); return }
 
+    // Find by auth_id
     const { data: byAuthId } = await supabase
       .from('staff')
       .select('*')
@@ -49,6 +49,7 @@ export function AuthProvider({ children }) {
       return
     }
 
+    // Link by email
     const { data: byEmail } = await supabase
       .from('staff')
       .select('*')
@@ -64,19 +65,24 @@ export function AuthProvider({ children }) {
       return
     }
 
+    // No staff record found - sign out and show error
+    setAuthError('Geen personeelsprofiel gevonden voor ' + user.email + '. Vraag de manager om je account te controleren.')
+    await supabase.auth.signOut()
     setStaff(null)
     setLoading(false)
   }
 
   async function signIn(email, password) {
     setLoading(true)
+    setAuthError('')
     const { error } = await supabase.auth.signInWithPassword({ email, password })
-    if (error) setLoading(false)
+    if (error) { setLoading(false) }
     return { error }
   }
 
   async function signOut() {
     setStaff(null)
+    setAuthError('')
     setLoading(false)
     Object.keys(localStorage).forEach(key => {
       if (key.startsWith('sb-') || key.includes('supabase')) localStorage.removeItem(key)
@@ -85,7 +91,7 @@ export function AuthProvider({ children }) {
   }
 
   return (
-    <AuthContext.Provider value={{ session, staff, loading, signIn, signOut }}>
+    <AuthContext.Provider value={{ session, staff, loading, authError, signIn, signOut }}>
       {children}
     </AuthContext.Provider>
   )
