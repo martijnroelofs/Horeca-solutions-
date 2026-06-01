@@ -14,7 +14,7 @@ const btn = (extra={}) => ({
 })
 
 export default function LoginPage() {
-  const { signIn } = useAuth()
+  const { signIn, authError } = useAuth()
   const [role, setRole] = useState(null) // null | 'admin' | 'staff'
   const [email, setEmail] = useState('')
   const [password, setPassword] = useState('')
@@ -141,6 +141,14 @@ export default function LoginPage() {
             </div>
           )}
 
+          {authError && (
+            <div style={{ background:'rgba(168,40,28,0.2)', border:'1px solid rgba(168,40,28,0.4)',
+              borderRadius:10, padding:'10px 14px', marginBottom:16,
+              color:'#FF8C72', fontSize:13, fontWeight:600 }}>
+              {authError}
+            </div>
+          )}
+
           <button type="submit" disabled={loading} style={{
             width: '100%', padding: 14, borderRadius: 12, border: 'none',
             background: loading ? 'rgba(255,255,255,0.2)' : (role === 'admin' ? C.gold : C.sky),
@@ -155,4 +163,3 @@ export default function LoginPage() {
     </div>
   )
 }
-
