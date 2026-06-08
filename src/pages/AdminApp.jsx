@@ -1710,7 +1710,7 @@ function PersoneelTab({ allStaff, capacities, orgId, onReload, show, shiftTempla
   useEffect(() => { setLocalScores(capacities) }, [capacities])
   const emptyForm = { name:'', email:'', password:'', role:'', color:'#1D4ED8',
     contract_type:'vast', contract_hours:20, min_hours:8, max_hours:32, hourly_rate:12, depts:[],
-    pref_min_days:1, pref_max_days:5 }
+    pref_min_days:1, pref_max_days:5, vacation_days_per_year:25 }
   const [form, setForm] = useState(emptyForm)
 
   const f = (k, v) => setForm(p => ({ ...p, [k]: v }))
@@ -1726,7 +1726,8 @@ function PersoneelTab({ allStaff, capacities, orgId, onReload, show, shiftTempla
           contract_type:form.contract_type, contract_hours:form.contract_hours,
           min_hours:form.min_hours, max_hours:form.max_hours,
           hourly_rate:form.hourly_rate, depts:form.depts,
-          pref_min_days:form.pref_min_days||1, pref_max_days:form.pref_max_days||5,
+          pref_min_days:form.pref_min_days||1, pref_max_days:form.pref_max_days||5, vacation_days_per_year:form.vacation_days_per_year||25,
+          vacation_days_per_year:form.vacation_days_per_year||25,
         }).eq('id', editId)
         if (updErr) { show('Fout bij opslaan: ' + updErr.message); return }
         show(`✓ ${form.name} bijgewerkt`)
@@ -1742,7 +1743,8 @@ function PersoneelTab({ allStaff, capacities, orgId, onReload, show, shiftTempla
           contract_type:form.contract_type, contract_hours:form.contract_hours,
           min_hours:form.min_hours, max_hours:form.max_hours,
           hourly_rate:form.hourly_rate, depts:form.depts, is_active:true,
-          pref_min_days:form.pref_min_days||1, pref_max_days:form.pref_max_days||5,
+          pref_min_days:form.pref_min_days||1, pref_max_days:form.pref_max_days||5, vacation_days_per_year:form.vacation_days_per_year||25,
+          vacation_days_per_year:form.vacation_days_per_year||25,
         }).select().single()
 
         // Send invite email via Edge Function
@@ -1812,6 +1814,22 @@ function PersoneelTab({ allStaff, capacities, orgId, onReload, show, shiftTempla
                   <div>
                     <div style={{ fontWeight:800, fontSize:15, color:C.ink }}>{s.name}</div>
                     <div style={{ color:C.inkMuted, fontSize:12 }}>{s.role} · {s.email}</div>
+                    {(() => {
+                      const used = leaveRequests.filter(l =>
+                        l.staff_id === s.id && l.status === 'approved' &&
+                        (!l.type || l.type === 'vacation')
+                      ).length
+                      const total = s.vacation_days_per_year || 25
+                      const remaining = total - used
+                      return (
+                        <div style={{ fontSize:11, marginTop:3 }}>
+                          <span style={{ color: remaining <= 5 ? C.amber : C.jade, fontWeight:700 }}>
+                            🌴 {remaining}/{total} vakantiedagen
+                          </span>
+                          {used > 0 && <span style={{ color:C.inkMuted }}> ({used} gebruikt)</span>}
+                        </div>
+                      )
+                    })()}
                     <div style={{ display:'flex', gap:4, marginTop:4, flexWrap:'wrap' }}>
                       {s.depts?.map(d => <Badge key={d} color={DEPTS[d]?.color || C.sky} style={{ fontSize:9, padding:'2px 7px' }}>{DEPTS[d]?.icon} {DEPTS[d]?.label}</Badge>)}
                       <Badge color={CONTRACT_TYPES[s.contract_type]?.color || C.jade} style={{ fontSize:9 }}>
@@ -2014,6 +2032,12 @@ function PersoneelTab({ allStaff, capacities, orgId, onReload, show, shiftTempla
               </div>
             ))}
             {!editId && (
+              <div style={{ marginBottom:14 }}>
+                <div style={{ fontSize:12, fontWeight:700, color:C.inkMid, marginBottom:5 }}>Vakantiedagen per jaar</div>
+                <input type="number" min="0" max="50" value={form.vacation_days_per_year||25}
+                  onChange={e => f('vacation_days_per_year', +e.target.value)}
+                  style={{ width:'100%', padding:'10px 12px', borderRadius:10, border:`1px solid ${C.border}`, fontSize:14, boxSizing:'border-box' }}/>
+              </div>
               <div style={{ marginBottom:14 }}>
                 <div style={{ fontSize:12, fontWeight:700, color:C.inkMid, marginBottom:5 }}>Tijdelijk wachtwoord *</div>
                 <input type="password" value={form.password} onChange={e => f('password', e.target.value)}
