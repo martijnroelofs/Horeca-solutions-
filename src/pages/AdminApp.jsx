@@ -2032,6 +2032,7 @@ function PersoneelTab({ allStaff, capacities, orgId, onReload, show, shiftTempla
               </div>
             ))}
             {!editId && (
+              <>
               <div style={{ marginBottom:14 }}>
                 <div style={{ fontSize:12, fontWeight:700, color:C.inkMid, marginBottom:5 }}>Vakantiedagen per jaar</div>
                 <input type="number" min="0" max="50" value={form.vacation_days_per_year||25}
@@ -2045,6 +2046,7 @@ function PersoneelTab({ allStaff, capacities, orgId, onReload, show, shiftTempla
                   style={{ width:'100%', padding:'10px 12px', borderRadius:10, border:`1px solid ${C.border}`,
                     fontSize:14, fontFamily:'inherit', color:C.ink, boxSizing:'border-box' }}/>
               </div>
+              </>
             )}
             <div style={{ display:'grid', gridTemplateColumns:'1fr 1fr', gap:10, marginBottom:14 }}>
               <div>
