@@ -244,10 +244,9 @@ export default function AdminApp() {
     setAssignments(byWeek)
   }
   async function loadLeaves() {
-    // Load via staff join on org_id to avoid dependency on allStaff being loaded
     const { data } = await supabase.from('leave_requests')
-      .select('*, staff:staff_id!inner(id,name,color,org_id)')
-      .eq('staff.org_id', orgId)
+      .select('*, staff:staff_id(id,name,color)')
+      .in('staff_id', allStaff.length ? allStaff.map(s => s.id) : ['00000000-0000-0000-0000-000000000000'])
       .order('created_at', { ascending: false })
     setLeaveRequests(data || [])
   }
@@ -304,7 +303,7 @@ export default function AdminApp() {
         const di = slot.day_of_week
         if (di >= dates.length) return
         const date = dates[di]
-        const assigned = (staffList || []).filter(s =>
+        const assigned = (staffList || []).filter(s => s.is_active &&
           s.depts?.includes(deptKey) &&
           schedule[s.id]?.[di] === slot.shift_name &&
           !claimed[`${s.id}_${di}`]
@@ -348,7 +347,7 @@ export default function AdminApp() {
   }
   async function loadOvertime() {
     const { data } = await supabase.from('overtime_log').select('*')
-      .in('staff_id', allStaff.length ? allStaff.map(s => s.id) : ['none'])
+      .in('staff_id', allStaff.length ? allStaff.map(s => s.id) : ['00000000-0000-0000-0000-000000000000'])
     const map = {}
     ;(data || []).forEach(o => { map[o.staff_id] = (map[o.staff_id] || 0) + (o.overtime_hours - o.compensated_hours) })
     setOvertimeLog(map)
@@ -423,6 +422,8 @@ export default function AdminApp() {
 
   // ── Generate schedule ────────────────────────────────────────────────────
   async function handleGenerate() {
+    if (!templateSlots.length) { show('Voeg eerst diensten toe aan de template'); return }
+    if (currentRoster && !window.confirm('Er bestaat al een rooster voor deze week. Overschrijven?')) return
     setGenerating(true)
     try {
       const result = generateSchedule({
@@ -529,8 +530,44 @@ export default function AdminApp() {
     await supabase.from('swap_requests').update({
       status, reviewed_by: me.id, reviewed_at: new Date().toISOString()
     }).eq('id', id)
+
+    if (status === 'approved') {
+      // Actually swap the roster assignments
+      const sw = swapRequests.find(s => s.id === id)
+      if (sw) {
+        const roster = Object.values(rosters).find(r =>
+          sw.from_date >= r.week_start &&
+          sw.from_date <= r.week_end
+        )
+        if (roster) {
+          // Swap from_staff's from_date assignment with to_staff's to_date assignment
+          const { data: fromAsgn } = await supabase.from('roster_assignments')
+            .select('id,shift_name').eq('roster_id', roster.id)
+            .eq('staff_id', sw.from_staff_id).eq('date', sw.from_date).maybeSingle()
+          const { data: toAsgn } = await supabase.from('roster_assignments')
+            .select('id,shift_name').eq('roster_id', roster.id)
+            .eq('staff_id', sw.to_staff_id).eq('date', sw.to_date).maybeSingle()
+
+          // Remove both assignments
+          if (fromAsgn) await supabase.from('roster_assignments').delete().eq('id', fromAsgn.id)
+          if (toAsgn) await supabase.from('roster_assignments').delete().eq('id', toAsgn.id)
+
+          // Re-insert swapped
+          if (fromAsgn) await supabase.from('roster_assignments').insert({
+            roster_id: roster.id, staff_id: sw.to_staff_id,
+            date: sw.from_date, shift_name: fromAsgn.shift_name
+          })
+          if (toAsgn) await supabase.from('roster_assignments').insert({
+            roster_id: roster.id, staff_id: sw.from_staff_id,
+            date: sw.to_date, shift_name: toAsgn.shift_name
+          })
+        }
+      }
+    }
+
     await loadSwaps()
-    show(status === 'approved' ? '✓ Ruiling goedgekeurd' : 'Ruiling afgewezen')
+    await loadAssignments()
+    show(status === 'approved' ? '✓ Ruiling goedgekeurd en rooster bijgewerkt' : 'Ruiling afgewezen')
   }
 
   // ── Derived data ─────────────────────────────────────────────────────────
@@ -1045,6 +1082,7 @@ function RoosterTab({ allStaff, currentSchedule, currentWeek, shiftTemplates, te
               // Find available staff: has this dept, has this shift, not yet claimed today
               const candidates = allStaff
                 .filter(s =>
+                  s.is_active &&
                   s.depts?.includes(dk) &&
                   currentSchedule[s.id]?.[di] === shiftName &&
                   !claimed[`${s.id}_${di}`]
@@ -1391,6 +1429,7 @@ function TemplateTab({ templateSlots: initialSlots, shiftTemplates, peakMoments,
                   .eq('org_id', orgId)
                   .eq('day_of_week', dayTab)
                   .eq('is_recurring', true)
+                  .eq('bezetting_template_id', activeTemplateId)
                 if (delErr) { show('Fout bij verwijderen: ' + delErr.message); return }
                 // Insert copies for target day in DB
                 const inserts = sourceSlots.map(s => ({
