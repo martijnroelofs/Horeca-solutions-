@@ -14,8 +14,10 @@ const DEPT_KEYS = ['bar', 'wijkloper', 'runner', 'keuken', 'spoelkeuken']
 
 function parseTime(timeStr) {
   // "08:00" → minutes from midnight
-  const [h, m] = timeStr.split(':').map(Number)
-  return h * 60 + m
+  if (!timeStr) return 0
+  const parts = timeStr.split(':').map(Number)
+  if (parts.length < 2 || isNaN(parts[0]) || isNaN(parts[1])) return 0
+  return parts[0] * 60 + parts[1]
 }
 
 function shiftHours(shift) {
@@ -128,7 +130,10 @@ export function generateSchedule({
 
         const slotBit = slot.shift_name === 'Ochtend' ? 1
           : slot.shift_name === 'Middag' ? 2
-          : slot.shift_name === 'Avond' ? 4 : 7
+          : slot.shift_name === 'Avond' ? 4
+          : slot.shift_name === 'Dubbel' ? 7
+          : slot.shift_name === 'Split' ? 3
+          : 7
 
         const shiftDuration = shiftHours(shift)
 
