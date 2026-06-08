@@ -206,7 +206,7 @@ export default function StaffApp() {
   async function requestLeave(date, reason) {
     if (!me?.id) { show('Fout: niet ingelogd'); return }
     const { data, error } = await supabase.from('leave_requests')
-      .insert({ staff_id:me.id, date, reason, status:'pending' })
+      .insert({ staff_id:me.id, date, reason, type:'vacation', status:'pending' })
       .select()
     if (error) { show('Fout: ' + error.message); console.error('leave error:', error); return }
     await loadLeaves()
@@ -428,7 +428,7 @@ export default function StaffApp() {
         {/* VRIJ */}
         {tab === 'vrij' && (
           <LeaveTab
-            leaveRequests={leaveRequests} onRequest={requestLeave} show={show}
+            leaveRequests={leaveRequests} me={me} onRequest={requestLeave} show={show}
           />
         )}
 
@@ -669,11 +669,38 @@ function AvailabilityEditor({ patterns, overrides, onSavePattern, onSaveOverride
   )
 }
 
-function LeaveTab({ leaveRequests, onRequest, show }) {
+function LeaveTab({ leaveRequests, me, onRequest, show }) {
   const [modal, setModal] = useState(false)
+  const usedDays = (leaveRequests||[]).filter(l =>
+    l.status === 'approved' && (!l.type || l.type === 'vacation')
+  ).length
+  const totalDays = me?.vacation_days_per_year || 25
+  const remainingDays = totalDays - usedDays
   const [form, setForm] = useState({ date:'', reason:'' })
 
   return <>
+    {/* Vakantiedagen saldo */}
+    <Card style={{ padding:'14px 16px', background: remainingDays <= 5 ? C.amberSoft : C.jadeSoft,
+      border:`1px solid ${remainingDays <= 5 ? C.amber+'44' : C.jade+'44'}` }}>
+      <div style={{ display:'flex', justifyContent:'space-between', alignItems:'center' }}>
+        <div>
+          <div style={{ fontWeight:800, fontSize:15, color:C.ink }}>🌴 Vakantiedagen</div>
+          <div style={{ color:C.inkMuted, fontSize:12, marginTop:2 }}>
+            {usedDays} van {totalDays} gebruikt
+          </div>
+        </div>
+        <div style={{ textAlign:'right' }}>
+          <div style={{ fontSize:28, fontWeight:900, color: remainingDays <= 5 ? C.amber : C.jade }}>
+            {remainingDays}
+          </div>
+          <div style={{ fontSize:11, color:C.inkMuted }}>over</div>
+        </div>
+      </div>
+      <div style={{ marginTop:10, height:6, background:'rgba(0,0,0,0.08)', borderRadius:3, overflow:'hidden' }}>
+        <div style={{ height:'100%', width:`${Math.min(100, (usedDays/totalDays)*100)}%`,
+          background: remainingDays <= 5 ? C.amber : C.jade, borderRadius:3, transition:'width 0.3s' }}/>
+      </div>
+    </Card>
     <button onClick={() => setModal(true)}
       style={{ ...btn(), background:C.terra, color:C.white, padding:'14px', fontSize:15, borderRadius:14,
         display:'flex', alignItems:'center', justifyContent:'center', gap:8 }}>
