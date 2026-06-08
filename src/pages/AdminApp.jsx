@@ -1816,7 +1816,7 @@ function PersoneelTab({ allStaff, capacities, orgId, onReload, show, shiftTempla
                     <div style={{ fontWeight:800, fontSize:15, color:C.ink }}>{s.name}</div>
                     <div style={{ color:C.inkMuted, fontSize:12 }}>{s.role} · {s.email}</div>
                     {(() => {
-                      const used = leaveRequests.filter(l =>
+                      const used = (leaveRequests||[]).filter(l =>
                         l.staff_id === s.id && l.status === 'approved' &&
                         (!l.type || l.type === 'vacation')
                       ).length
