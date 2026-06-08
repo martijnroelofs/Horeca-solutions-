@@ -904,6 +904,7 @@ export default function AdminApp() {
             overtimeLog={overtimeLog}
             availPatterns={availPatterns}
             fixedAssignments={fixedAssignments}
+            leaveRequests={leaveRequests}
           />
         )}
 
@@ -1700,7 +1701,7 @@ function AanvragenTab({ pendingLeaves, pendingSwaps, onLeave, onSwap }) {
   )
 }
 
-function PersoneelTab({ allStaff, capacities, orgId, onReload, show, shiftTemplates, currentSchedule, overtimeLog, availPatterns, fixedAssignments }) {
+function PersoneelTab({ allStaff, capacities, orgId, onReload, show, shiftTemplates, currentSchedule, overtimeLog, availPatterns, fixedAssignments, leaveRequests }) {
   const [modal, setModal] = useState(false)
   const [editId, setEditId] = useState(null)
   const [capId, setCapId] = useState(null)
