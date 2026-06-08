@@ -1823,11 +1823,25 @@ function PersoneelTab({ allStaff, capacities, orgId, onReload, show, shiftTempla
                       const total = s.vacation_days_per_year || 25
                       const remaining = total - used
                       return (
-                        <div style={{ fontSize:11, marginTop:3 }}>
-                          <span style={{ color: remaining <= 5 ? C.amber : C.jade, fontWeight:700 }}>
-                            🌴 {remaining}/{total} vakantiedagen
+                        <div style={{ display:'flex', alignItems:'center', gap:6, marginTop:3 }}>
+                          <span style={{ fontSize:11, color: remaining <= 5 ? C.amber : C.jade, fontWeight:700 }}>
+                            🌴 {remaining} over ·
                           </span>
-                          {used > 0 && <span style={{ color:C.inkMuted }}> ({used} gebruikt)</span>}
+                          <input
+                            type="number" min="0" max="365"
+                            value={total}
+                            onChange={async e => {
+                              const val = +e.target.value
+                              await supabase.from('staff').update({ vacation_days_per_year: val }).eq('id', s.id)
+                              onReload()
+                            }}
+                            style={{ width:44, padding:'1px 5px', borderRadius:6,
+                              border:`1px solid ${C.border}`, fontSize:11,
+                              textAlign:'center', color:C.ink }}
+                          />
+                          <span style={{ fontSize:11, color:C.inkMuted }}>
+                            dagen/jaar ({used} gebruikt)
+                          </span>
                         </div>
                       )
                     })()}
