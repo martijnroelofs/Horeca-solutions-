@@ -141,6 +141,11 @@ export default function StaffApp() {
   }
 
   async function putShiftOpen(date, shiftName, rosterId) {
+    // Only allow for published rosters
+    if (rosterStatus[currentWeek.monday] !== 'published') {
+      show('Rooster is nog niet gepubliceerd')
+      return
+    }
     // Check if already open
     const { data: existing } = await supabase.from('open_shifts')
       .select('id').eq('original_staff_id', me.id).eq('date', date).eq('status', 'open')
@@ -160,6 +165,15 @@ export default function StaffApp() {
   }
 
   async function claimOpenShift(openShiftId) {
+    // Check if already scheduled that day
+    const openShift = openShifts.find(o => o.id === openShiftId)
+    if (openShift) {
+      const di = currentWeek.dates.indexOf(openShift.date)
+      if (di > -1 && schedule[di]) {
+        show('Je staat die dag al ingeroosterd')
+        return
+      }
+    }
     const { error } = await supabase.from('open_shifts')
       .update({ status: 'claimed', claimed_by_id: me.id })
       .eq('id', openShiftId)
@@ -222,7 +236,7 @@ export default function StaffApp() {
     { id:'rooster',      icon:'📅', l:'Rooster' },
     { id:'beschikbaar',  icon:'✏️',  l:'Beschikbaar' },
     { id:'vrij',         icon:'🏖',  l:'Vrij' },
-    { id:'ruilen', icon:'🔄', l:'Ruilen', badge: openShifts.filter(o => o.original_staff_id !== me?.id).length },
+    { id:'ruilen', icon:'🔄', l:'Ruilen', badge: (openShifts||[]).filter(o => o.original_staff_id !== me?.id).length },
   ]
 
   if (loading) return (
@@ -687,7 +701,7 @@ function LeaveTab({ leaveRequests, onRequest, show }) {
           <div style={{ fontWeight:800, fontSize:18, marginBottom:18 }}>Vrije dag aanvragen</div>
           <div style={{ marginBottom:14 }}>
             <div style={{ fontSize:12, fontWeight:700, color:C.inkMid, marginBottom:5 }}>Datum</div>
-            <input type="date" value={form.date} onChange={e => setForm(f=>({...f,date:e.target.value}))}
+            <input type="date" value={form.date} min={new Date().toISOString().split('T')[0]} onChange={e => setForm(f=>({...f,date:e.target.value}))}
               style={{ width:'100%', padding:'11px 14px', borderRadius:10, border:`1px solid ${C.border}`, fontSize:14, boxSizing:'border-box' }}/>
           </div>
           <div style={{ marginBottom:20 }}>
