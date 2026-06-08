@@ -1829,11 +1829,12 @@ function PersoneelTab({ allStaff, capacities, orgId, onReload, show, shiftTempla
                           </span>
                           <input
                             type="number" min="0" max="365"
-                            value={total}
-                            onChange={async e => {
+                            defaultValue={total}
+                            onBlur={async e => {
                               const val = +e.target.value
-                              await supabase.from('staff').update({ vacation_days_per_year: val }).eq('id', s.id)
-                              onReload()
+                              if (val !== total) {
+                                await supabase.from('staff').update({ vacation_days_per_year: val }).eq('id', s.id)
+                              }
                             }}
                             style={{ width:44, padding:'1px 5px', borderRadius:6,
                               border:`1px solid ${C.border}`, fontSize:11,
