@@ -789,7 +789,7 @@ export default function AdminApp() {
               ))}
             </div>
 
-            {/* Publish status */}
+            {/* Publish status (info only - acties op Rooster-pagina) */}
             <div style={{ background:isPublished?C.jadeSoft:C.amberSoft,
               border:`1px solid ${isPublished?C.jade:C.amber}44`,
               borderRadius:14, padding:'12px 18px', display:'flex',
@@ -803,43 +803,15 @@ export default function AdminApp() {
                   </div>
                   <div style={{ color:C.inkMuted, fontSize:12 }}>
                     {isPublished ? `Gepubliceerd op ${new Date(currentRoster?.published_at).toLocaleDateString('nl-NL')}`
-                      : 'Genereer en publiceer het rooster voor dit week'}
+                      : 'Genereer en publiceer het rooster via de Rooster-pagina'}
                   </div>
                 </div>
               </div>
-              <div style={{ display:'flex', gap:8, alignItems:'center', flexWrap:'wrap' }}>
-                <div style={{ background:'rgba(255,255,255,0.5)', borderRadius:10, padding:'6px 12px' }}>
-                  <div style={{ fontSize:10, fontWeight:700, color:C.inkMid, marginBottom:3 }}>
-                    {scheduleMode <= 33 ? '💰 Laagste kosten' : scheduleMode <= 66 ? '⚖️ Gebalanceerd' : '⭐ Beste kwaliteit'}
-                  </div>
-                  <input type="range" min={0} max={100} value={scheduleMode}
-                    onChange={e => setScheduleMode(+e.target.value)}
-                    style={{ width:90, accentColor:C.terra, cursor:'pointer', height:5 }}/>
-                </div>
-                <button onClick={handleGenerateMonth} disabled={generating}
-                  style={{ ...btn(), background:generating?C.inkMuted:C.sky, color:C.white,
-                    padding:'8px 16px', fontSize:13, borderRadius:10 }}>
-                  {generating ? '⟳ Bezig...' : `🗓 Genereer ${new Date(Date.UTC(new Date().getUTCMonth()===11?new Date().getUTCFullYear()+1:new Date().getUTCFullYear(),(new Date().getUTCMonth()+1)%12,1)).toLocaleDateString('nl-NL',{month:'long',timeZone:'UTC'})}`}
-                </button>
-                <button onClick={handleGenerate} disabled={generating}
-                  style={{ ...btn(), background:generating?C.inkMuted:C.terra, color:C.white,
-                    padding:'8px 16px', fontSize:13, borderRadius:10 }}>
-                  {generating ? '⟳ Bezig...' : '🪄 Genereer week'}
-                </button>
-                {currentRoster && !isPublished && (
-                  <button onClick={handleDeleteRoster}
-                    style={{ ...btn(), background:C.crimsonSoft, color:C.crimson,
-                      border:`1px solid ${C.crimson}44`, padding:'8px 14px', fontSize:13, borderRadius:10 }}>
-                    🗑 Verwijder rooster
-                  </button>
-                )}
-                {!isPublished && currentRoster && (
-                  <button onClick={handlePublish}
-                    style={{ ...btn(), background:C.jade, color:C.white, padding:'8px 16px', fontSize:13, borderRadius:10 }}>
-                    Publiceren
-                  </button>
-                )}
-              </div>
+              <button onClick={() => setTab('rooster')}
+                style={{ ...btn(), background:'rgba(255,255,255,0.6)', color:C.inkMid,
+                  padding:'8px 16px', fontSize:13, borderRadius:10 }}>
+                Naar rooster →
+              </button>
             </div>
 
             {/* Email herinnering */}
@@ -903,10 +875,12 @@ export default function AdminApp() {
             availPatterns={availPatterns} availOverrides={availOverrides}
             capacities={capacities} isPublished={isPublished}
             weekIdx={weekIdx} weeks={weeks} setWeekIdx={setWeekIdx}
-            onGenerate={handleGenerate} generating={generating}
+            onGenerate={handleGenerate} onGenerateMonth={handleGenerateMonth} generating={generating}
             onPublish={handlePublish}
             openShifts={openShifts}
             rosterGaps={rosterGaps}
+            scheduleMode={scheduleMode} setScheduleMode={setScheduleMode}
+            currentRoster={currentRoster}
             onDelete={currentRoster && !isPublished ? handleDeleteRoster : null}
             onCellChange={async (staffId, di, shiftName) => {
               const roster = currentRoster || (await supabase.from('rosters').upsert({
@@ -1017,7 +991,8 @@ export default function AdminApp() {
 
 function RoosterTab({ allStaff, currentSchedule, currentWeek, shiftTemplates, templateSlots, peakMoments,
   leaveRequests, availPatterns, availOverrides, capacities, isPublished,
-  weekIdx, weeks, setWeekIdx, onGenerate, generating, onPublish, onDelete, openShifts, rosterGaps, onCellChange }) {
+  weekIdx, weeks, setWeekIdx, onGenerate, onGenerateMonth, generating, onPublish, onDelete, openShifts, rosterGaps, onCellChange,
+  scheduleMode, setScheduleMode, currentRoster }) {
   const [editCell, setEditCell] = useState(null)
 
   const staffByDept = useMemo(() => {
@@ -1044,11 +1019,25 @@ function RoosterTab({ allStaff, currentSchedule, currentWeek, shiftTemplates, te
       {editCell && <div style={{ position:'fixed', inset:0, zIndex:8 }} onClick={() => setEditCell(null)}/>}
       <div style={{ display:'flex', justifyContent:'space-between', alignItems:'center', flexWrap:'wrap', gap:10 }}>
         <WeekNav week={weekIdx} weeks={weeks.map(w=>w.label)} setWeek={setWeekIdx} />
-        <div style={{ display:'flex', gap:8, alignItems:'center' }}>
+        <div style={{ display:'flex', gap:8, alignItems:'center', flexWrap:'wrap' }}>
+          {/* Kosten/kwaliteit regelaar */}
+          <div style={{ background:C.surface, border:`1px solid ${C.border}`, borderRadius:11, padding:'6px 12px' }}>
+            <div style={{ fontSize:10, fontWeight:700, color:C.inkMid, marginBottom:3 }}>
+              {scheduleMode <= 33 ? '💰 Laagste kosten' : scheduleMode <= 66 ? '⚖️ Gebalanceerd' : '⭐ Beste kwaliteit'}
+            </div>
+            <input type="range" min={0} max={100} value={scheduleMode}
+              onChange={e => setScheduleMode(+e.target.value)}
+              style={{ width:100, accentColor:C.terra, cursor:'pointer', height:5 }}/>
+          </div>
+          <button onClick={onGenerateMonth} disabled={generating}
+            style={{ ...btn(), background:generating?C.inkMuted:C.sky, color:C.white,
+              padding:'10px 16px', fontSize:13, borderRadius:11 }}>
+            {generating ? '⟳ Bezig...' : `🗓 Genereer ${new Date(Date.UTC(new Date().getUTCMonth()===11?new Date().getUTCFullYear()+1:new Date().getUTCFullYear(),(new Date().getUTCMonth()+1)%12,1)).toLocaleDateString('nl-NL',{month:'long',timeZone:'UTC'})}`}
+          </button>
           <button onClick={onGenerate} disabled={generating || isPublished}
             style={{ ...btn(), background:isPublished?C.inkMuted:C.terra, color:C.white,
               padding:'10px 18px', fontSize:13, borderRadius:11, opacity:isPublished?0.5:1 }}>
-            {generating ? '⟳ Bezig...' : '🪄 Genereer'}
+            {generating ? '⟳ Bezig...' : '🪄 Genereer week'}
           </button>
           {onDelete && (
             <button onClick={onDelete}
