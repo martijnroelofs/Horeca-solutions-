@@ -151,7 +151,7 @@ export default function AdminApp() {
         localStorage.setItem(storageKey, 'true')
         // Delay to ensure data is loaded first
         setTimeout(() => handleGenerateMonth(), 3000)
-        show(`🗓 Automatisch rooster genereren voor ${nextMonth.toLocaleDateString('nl-NL', {month:'long', year:'numeric'})}...`)
+        show(`🗓 Automatisch rooster genereren voor volgende maand...`)
       }
     }
 
