@@ -42,9 +42,14 @@ function getEffectiveMaxHours(staff, settings, otHistory) {
     : staff.contract_hours || 20
 
   const ot = otHistory[staff.id] || 0
-  // If staff has overtime to compensate, reduce effective max
-  const compensation = ot > 0 ? Math.min(ot, settings.max_overtime_hours) : 0
-  return base + settings.max_overtime_hours - compensation
+  // Compensation principle (tijd-voor-tijd):
+  // - No OT: staff can work up to contract + allowed overtime
+  // - With OT: directly subtract accumulated OT from the ceiling so they work
+  //   fewer hours in following weeks until the OT balance is cleared.
+  // Floor at 50% of contract so they aren't fully removed in a single week.
+  const ceiling = base + settings.max_overtime_hours - ot
+  const floor = Math.round(base * 0.5)
+  return Math.max(floor, ceiling)
 }
 
 function getContractMax(staff) {
@@ -149,6 +154,12 @@ export function generateSchedule({
         if (fixedForSlot.length > 0) {
           fixedForSlot.forEach(s => {
             if (fixedAssigned >= slot.count) return
+            // Check leave
+            if (leaveSet.has(`${s.id}-${date}`)) return
+            // Check max days
+            const daysAssigned = schedule[s.id].filter(Boolean).length
+            if (daysAssigned >= max_days_per_week) return
+            // Check availability
             const patternBits = availabilityPatterns?.[s.id]?.[dayOfWeek] ?? 0
             const overrideBits = availabilityOverrides?.[s.id]?.[date]
             const availBits = overrideBits !== undefined ? overrideBits : patternBits
@@ -160,7 +171,7 @@ export function generateSchedule({
               if (restHours < minRestHours) return
             }
             schedule[s.id][di] = slot.shift_name
-            hoursPlanned[s.id] += (parseTime(shift.end_time) - parseTime(shift.start_time)) / 60
+            hoursPlanned[s.id] += shiftHours(shift)  // uses break_minutes correctly
             lastShiftEnd[s.id] = shift.end_time
             fixedAssigned++
           })
@@ -210,6 +221,12 @@ export function generateSchedule({
         // On peak days: always prioritise by capacity score regardless of scheduleMode
         const qualityWeight = isPeak ? 1.0 : (settings.scheduleMode ?? 50) / 100
         pool.sort((a, b) => {
+          // HARD priority: staff with accumulated overtime go LAST
+          // (so they get fewer shifts and their OT balance can be compensated)
+          const aOT = otHistory[a.id] || 0
+          const bOT = otHistory[b.id] || 0
+          if (Math.abs(aOT - bOT) > 0.5) return aOT - bOT  // lower OT first
+
           // Soft rule: prefer staff who haven't reached pref_min_days yet
           const aDays = schedule[a.id].filter(Boolean).length
           const bDays = schedule[b.id].filter(Boolean).length
@@ -286,19 +303,20 @@ export function calcFinancials(staff, schedule, shiftTemplates, weekDates, holid
       const h = shiftHours(shift)
       const date = weekDates[di]
       const isFest = festDates.has(date)
+      const rate = s.hourly_rate || 0  // guard against null/undefined
       hours += h
       if (isFest) {
         festHours += h
-        cost += h * s.hourly_rate * 1.5
+        cost += h * rate * 1.5
       } else {
-        cost += h * s.hourly_rate
+        cost += h * rate
       }
     })
 
     const contractH = getContractMax(s)
     otHours = Math.max(0, hours - contractH)
     // OT surcharge (0.5× extra) for non-feestdag OT
-    const otExtra = Math.max(0, otHours - festHours) * s.hourly_rate * 0.5
+    const otExtra = Math.max(0, otHours - festHours) * (s.hourly_rate || 0) * 0.5
     cost += otExtra
 
     return {
