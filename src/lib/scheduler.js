@@ -195,7 +195,7 @@ export function generateSchedule({
             const overrideBits = availabilityOverrides?.[s.id]?.[date]
             const availBits = overrideBits !== undefined ? overrideBits : patternBits
             if (availBits === 0) return
-            if (!restOkBothSides(shiftEndByDay, shiftStartByDay, s.id, di, shift, minRestHours)) return
+            if (!restOkBothSides(shiftEndByDay, shiftStartByDay, s.id, di, shift, min_rest_hours)) return
             schedule[s.id][di] = slot.shift_name
             hoursPlanned[s.id] += shiftHours(shift)  // uses break_minutes correctly
             lastShiftEnd[s.id] = shift.end_time
