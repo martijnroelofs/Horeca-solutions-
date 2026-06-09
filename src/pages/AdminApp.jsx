@@ -447,6 +447,15 @@ export default function AdminApp() {
 
     await loadAssignments()
     setGenerating(false)
+
+    // Navigate to the first week that actually starts in the target month
+    const firstMonthWeek = monthWeeks.find(w => w.monday >= firstDay) || monthWeeks[0]
+    const newWeekIdx = weeks.findIndex(w => w.monday === firstMonthWeek.monday)
+    if (newWeekIdx >= 0) {
+      setWeekIdx(newWeekIdx)
+      setTab('rooster')
+    }
+
     // Calculate total gaps across all weeks
     const totalGaps = monthWeeks.reduce((sum, week) => {
       const sched = {}
