@@ -220,6 +220,15 @@ export function generateSchedule({
         // Also respect pref_min/max_days as soft rules
         // On peak days: always prioritise by capacity score regardless of scheduleMode
         const qualityWeight = isPeak ? 1.0 : (settings.scheduleMode ?? 50) / 100
+        // Normalize hourly rates across the pool to a 0-10 scale so cost and
+        // quality (capacity score, also 0-10) carry equal weight at scheduleMode=50.
+        const rates = pool.map(s => s.hourly_rate || 12)
+        const minRate = Math.min(...rates)
+        const maxRate = Math.max(...rates)
+        const rateRange = maxRate - minRate || 1
+        // cheapnessScore: 10 = cheapest, 0 = most expensive
+        const cheapness = s => 10 - ((s.hourly_rate || 12) - minRate) / rateRange * 10
+
         pool.sort((a, b) => {
           // HARD priority: staff with accumulated overtime go LAST
           // (so they get fewer shifts and their OT balance can be compensated)
@@ -236,15 +245,14 @@ export function generateSchedule({
           const bNeedsMore = bDays < bPrefMin ? 1 : 0
           if (aNeedsMore !== bNeedsMore) return bNeedsMore - aNeedsMore
 
-          // On peak days: capacity score is the only factor
+          // Both factors on a 0-10 scale
           const aScore = capacityScores?.[a.id]?.[dk] ?? 5
           const bScore = capacityScores?.[b.id]?.[dk] ?? 5
-          const aCost = a.hourly_rate || 12
-          const bCost = b.hourly_rate || 12
-
-          const qualityDiff = (bScore - aScore) * qualityWeight
-          const costDiff = (aCost - bCost) * (1 - qualityWeight)
-          return qualityDiff + costDiff
+          // Combined score: weighted blend of quality and cheapness
+          // scheduleMode=100 → pure quality, =0 → pure cheapness
+          const aCombined = aScore * qualityWeight + cheapness(a) * (1 - qualityWeight)
+          const bCombined = bScore * qualityWeight + cheapness(b) * (1 - qualityWeight)
+          return bCombined - aCombined  // highest combined score first
         })
 
         // Filter out staff who exceeded pref_max_days (soft rule - only if enough alternatives)
