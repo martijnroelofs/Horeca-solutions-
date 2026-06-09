@@ -36,6 +36,19 @@ function hasMinRest(lastEnd, nextStart, minRestHours) {
   return (next - last) >= (minRestHours * 60)
 }
 
+// Bidirectional rest check across calendar days.
+// Since days are processed peak-first (out of calendar order), we must check
+// rest against BOTH the previous and next calendar day's assigned shift.
+function restOkBothSides(shiftEndByDay, shiftStartByDay, staffId, di, shift, minRestHours) {
+  const ends = shiftEndByDay[staffId] || {}
+  const starts = shiftStartByDay[staffId] || {}
+  // Previous day's end → this shift's start
+  if (ends[di - 1] && !hasMinRest(ends[di - 1], shift.start_time, minRestHours)) return false
+  // This shift's end → next day's start
+  if (starts[di + 1] && !hasMinRest(shift.end_time, starts[di + 1], minRestHours)) return false
+  return true
+}
+
 function getEffectiveMaxHours(staff, settings, otHistory) {
   const base = staff.contract_type === 'min_max'
     ? staff.max_hours
@@ -90,7 +103,10 @@ export function generateSchedule({
   staff.forEach(s => { hoursPlanned[s.id] = 0 })
 
   // Track last shift end time per staff (for rest check)
-  const lastShiftEnd = {} // { staffId: 'HH:MM' }
+  const lastShiftEnd = {} // { staffId: 'HH:MM' } — legacy, kept for compat
+  const shiftEndByDay = {} // { staffId: { dayIndex: 'HH:MM' } } — for rest-hour checks across calendar days
+  const shiftStartByDay = {} // { staffId: { dayIndex: 'HH:MM' } } — start times per day
+
 
   // Build leave set
   const leaveSet = new Set(
@@ -99,18 +115,33 @@ export function generateSchedule({
       .map(l => `${l.staff_id}-${l.date}`)
   )
 
-  // Process each day
-  weekDates.forEach((date, di) => {
+  // Build processing order: PEAK DAYS FIRST, then non-peak days.
+  // This reserves the highest-scoring staff for peak moments before
+  // they get used up on quieter days.
+  const dayOrder = weekDates
+    .map((date, di) => {
+      const peak = (peakMoments || []).find(p => p.date === date)
+      const recurringPeak = recurringPeaks[di]
+      return { date, di, isPeak: !!(peak || recurringPeak) }
+    })
+    .sort((a, b) => {
+      // Peak days first
+      if (a.isPeak !== b.isPeak) return a.isPeak ? -1 : 1
+      // Within same group, keep calendar order
+      return a.di - b.di
+    })
+
+  // Process each day in peak-first order
+  dayOrder.forEach(({ date, di, isPeak }) => {
     const dayOfWeek = di // 0=Mon
 
     // Check holiday
     const holiday = (holidays || []).find(h => h.date === date)
     if (holiday?.is_closed) return // skip day entirely
 
-    // Check peak — date-specific OR recurring weekday
+    // peak info (already computed for ordering)
     const peak = (peakMoments || []).find(p => p.date === date)
     const recurringPeak = recurringPeaks[dayOfWeek]
-    const isPeak = !!(peak || recurringPeak)
 
     // Get slots for this day
     let daySlots
@@ -164,15 +195,14 @@ export function generateSchedule({
             const overrideBits = availabilityOverrides?.[s.id]?.[date]
             const availBits = overrideBits !== undefined ? overrideBits : patternBits
             if (availBits === 0) return
-            if (lastShiftEnd[s.id]) {
-              const endMins = parseTime(lastShiftEnd[s.id])
-              const startMins = parseTime(shift.start_time)
-              const restHours = (startMins + 1440 - endMins) % 1440 / 60
-              if (restHours < minRestHours) return
-            }
+            if (!restOkBothSides(shiftEndByDay, shiftStartByDay, s.id, di, shift, minRestHours)) return
             schedule[s.id][di] = slot.shift_name
             hoursPlanned[s.id] += shiftHours(shift)  // uses break_minutes correctly
             lastShiftEnd[s.id] = shift.end_time
+            if (!shiftEndByDay[s.id]) shiftEndByDay[s.id] = {}
+            if (!shiftStartByDay[s.id]) shiftStartByDay[s.id] = {}
+            shiftEndByDay[s.id][di] = shift.end_time
+            shiftStartByDay[s.id][di] = shift.start_time
             fixedAssigned++
           })
         }
@@ -203,10 +233,8 @@ export function generateSchedule({
           if (availBits !== 7 && !(availBits & slotBit)) return false
 
           // Minimum rest check
-          if (lastShiftEnd[s.id]) {
-            if (!hasMinRest(lastShiftEnd[s.id], shift.start_time, min_rest_hours)) {
-              return false
-            }
+          if (!restOkBothSides(shiftEndByDay, shiftStartByDay, s.id, di, shift, min_rest_hours)) {
+            return false
           }
 
           // Contract type: stagiairs max 8h/day, oproep always eligible
@@ -271,6 +299,10 @@ export function generateSchedule({
           schedule[s.id][di] = slot.shift_name
           hoursPlanned[s.id] += shiftDuration
           lastShiftEnd[s.id] = shift.end_time
+          if (!shiftEndByDay[s.id]) shiftEndByDay[s.id] = {}
+          if (!shiftStartByDay[s.id]) shiftStartByDay[s.id] = {}
+          shiftEndByDay[s.id][di] = shift.end_time
+          shiftStartByDay[s.id][di] = shift.start_time
           assigned++
         })
         } // end else pool assignment
