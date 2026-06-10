@@ -23,8 +23,11 @@ function parseTime(timeStr) {
 function shiftHours(shift) {
   if (!shift) return 0
   const start = parseTime(shift.start_time)
-  const end = parseTime(shift.end_time)
-  return ((end - start) - shift.break_minutes) / 60
+  let end = parseTime(shift.end_time)
+  // Handle shifts crossing midnight (e.g. 18:00–02:00)
+  if (end < start) end += 24 * 60
+  const breakMin = shift.break_minutes || 0  // guard against null/undefined
+  return Math.max(0, (end - start) - breakMin) / 60
 }
 
 function hasMinRest(lastEnd, nextStart, minRestHours) {
@@ -162,7 +165,7 @@ export function generateSchedule({
       const deptSlots = daySlots.filter(s => s.dept === dk)
       for (const slot of deptSlots) {
         const shift = shiftTemplates[slot.shift_name]
-        if (!shift) return
+        if (!shift) continue
 
         const slotBit = slot.shift_name === 'Ochtend' ? 1
           : slot.shift_name === 'Middag' ? 2
@@ -190,11 +193,12 @@ export function generateSchedule({
             // Check max days
             const daysAssigned = schedule[s.id].filter(Boolean).length
             if (daysAssigned >= max_days_per_week) return
-            // Check availability
+            // Check availability — must match the specific shift slot, not just be non-zero
             const patternBits = availabilityPatterns?.[s.id]?.[dayOfWeek] ?? 0
             const overrideBits = availabilityOverrides?.[s.id]?.[date]
             const availBits = overrideBits !== undefined ? overrideBits : patternBits
-            if (availBits === 0) return
+            if (!availBits) return
+            if (availBits !== 7 && !(availBits & slotBit)) return
             if (!restOkBothSides(shiftEndByDay, shiftStartByDay, s.id, di, shift, min_rest_hours)) return
             schedule[s.id][di] = slot.shift_name
             hoursPlanned[s.id] += shiftHours(shift)  // uses break_minutes correctly
@@ -257,14 +261,29 @@ export function generateSchedule({
         // cheapnessScore: 10 = cheapest, 0 = most expensive
         const cheapness = s => 10 - ((s.hourly_rate || 12) - minRate) / rateRange * 10
 
+        // Target hours per staff: contract hours minus OT to compensate (tijd-voor-tijd).
+        // Vast/stagiair: contract_hours is paid anyway, so schedule toward it.
+        // min_max: the guaranteed minimum. Oproep: no guarantee (target 0).
+        const targetHoursOf = s => {
+          if (s.contract_type === 'oproep') return 0
+          const base = s.contract_type === 'min_max' ? (s.min_hours || 0) : (s.contract_hours || 0)
+          return Math.max(0, base - (otHistory[s.id] || 0))
+        }
+
         pool.sort((a, b) => {
-          // HARD priority: staff with accumulated overtime go LAST
-          // (so they get fewer shifts and their OT balance can be compensated)
+          // PRIORITY 1: staff below their target hours come first.
+          // This ensures vast-contract staff reach (contract − OT) hours,
+          // while OT is still compensated because their target is lowered.
+          const aBelow = hoursPlanned[a.id] < targetHoursOf(a) ? 1 : 0
+          const bBelow = hoursPlanned[b.id] < targetHoursOf(b) ? 1 : 0
+          if (aBelow !== bBelow) return bBelow - aBelow
+
+          // PRIORITY 2: within the same group, lower OT balance first
           const aOT = otHistory[a.id] || 0
           const bOT = otHistory[b.id] || 0
-          if (Math.abs(aOT - bOT) > 0.5) return aOT - bOT  // lower OT first
+          if (Math.abs(aOT - bOT) > 0.5) return aOT - bOT
 
-          // Soft rule: prefer staff who haven't reached pref_min_days yet
+          // PRIORITY 3: prefer staff who haven't reached pref_min_days yet
           const aDays = schedule[a.id].filter(Boolean).length
           const bDays = schedule[b.id].filter(Boolean).length
           const aPrefMin = a.pref_min_days || 1
