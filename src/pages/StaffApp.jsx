@@ -174,10 +174,19 @@ export default function StaffApp() {
         return
       }
     }
-    const { error } = await supabase.from('open_shifts')
+    // Race-condition guard: update slaagt alleen als de dienst nog open is.
+    // Als een collega net eerder claimde, komt er 0 rijen terug.
+    const { data: claimed, error } = await supabase.from('open_shifts')
       .update({ status: 'claimed', claimed_by_id: me.id })
       .eq('id', openShiftId)
+      .eq('status', 'open')
+      .select()
     if (error) { show('Fout: ' + error.message); return }
+    if (!claimed || claimed.length === 0) {
+      show('Deze dienst is net door een collega geclaimd')
+      await loadOpenShifts()
+      return
+    }
     await loadOpenShifts()
     show('✓ Dienst geclaimd — manager keurt goed')
   }
@@ -461,6 +470,8 @@ function buildGCalLink(name, date, tmpl) {
   const fmt = d => d.toISOString().replace(/[-:]/g, '').split('.')[0] + 'Z'
   const s = new Date(`${date}T${tmpl.start_time}:00`)
   const e = new Date(`${date}T${tmpl.end_time}:00`)
+  // Night shift crossing midnight: end is on the next day
+  if (e <= s) e.setDate(e.getDate() + 1)
   const p = new URLSearchParams({
     action: 'TEMPLATE', text: `Dienst ${tmpl.name}`,
     dates: `${fmt(s)}/${fmt(e)}`,
