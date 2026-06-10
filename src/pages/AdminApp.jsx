@@ -587,8 +587,29 @@ export default function AdminApp() {
     await supabase.from('leave_requests').update({
       status, reviewed_by: me.id, reviewed_at: new Date().toISOString()
     }).eq('id', id)
+
+    if (status === 'approved') {
+      // Remove the staff member from any existing roster on that date
+      const lr = leaveRequests.find(l => l.id === id)
+      if (lr) {
+        // Find the roster covering that date (week_start = monday, +6 days)
+        const roster = Object.values(rosters).find(r => {
+          const weekEnd = new Date(r.week_start)
+          weekEnd.setDate(weekEnd.getDate() + 6)
+          return lr.date >= r.week_start && lr.date <= weekEnd.toISOString().slice(0, 10)
+        })
+        if (roster) {
+          await supabase.from('roster_assignments').delete()
+            .eq('roster_id', roster.id)
+            .eq('staff_id', lr.staff_id)
+            .eq('date', lr.date)
+        }
+      }
+    }
+
     await loadLeaves()
-    show(status === 'approved' ? '✓ Vrije dag goedgekeurd' : 'Aanvraag afgewezen')
+    await loadAssignments()
+    show(status === 'approved' ? '✓ Vrije dag goedgekeurd — uit rooster gehaald' : 'Aanvraag afgewezen')
   }
 
   async function reviewSwap(id, status) {
@@ -692,6 +713,11 @@ export default function AdminApp() {
               <div style={{ color:'rgba(255,255,255,0.3)', fontSize:10, letterSpacing:'0.08em', textTransform:'uppercase' }}>Manager</div>
             </div>
           </div>
+          <button onClick={() => window.location.href = '/rooster?preview=1'}
+            title="Bekijk de app zoals je personeel hem ziet"
+            style={{ ...btn(), background:'rgba(255,255,255,0.07)', color:'rgba(255,255,255,0.55)', padding:'6px 14px', fontSize:12, borderRadius:8, marginRight:8 }}>
+            👁 Bekijk als personeel
+          </button>
           <button onClick={signOut} style={{ ...btn(), background:'rgba(255,255,255,0.07)', color:'rgba(255,255,255,0.4)', padding:'6px 14px', fontSize:12, borderRadius:8 }}>
             Uitloggen
           </button>
@@ -1785,7 +1811,6 @@ function PersoneelTab({ allStaff, capacities, orgId, onReload, show, shiftTempla
           min_hours:form.min_hours, max_hours:form.max_hours,
           hourly_rate:form.hourly_rate, depts:form.depts,
           pref_min_days:form.pref_min_days||1, pref_max_days:form.pref_max_days||5, vacation_days_per_year:form.vacation_days_per_year||25,
-          vacation_days_per_year:form.vacation_days_per_year||25,
         }).eq('id', editId)
         if (updErr) { show('Fout bij opslaan: ' + updErr.message); return }
         show(`✓ ${form.name} bijgewerkt`)
@@ -1802,7 +1827,6 @@ function PersoneelTab({ allStaff, capacities, orgId, onReload, show, shiftTempla
           min_hours:form.min_hours, max_hours:form.max_hours,
           hourly_rate:form.hourly_rate, depts:form.depts, is_active:true,
           pref_min_days:form.pref_min_days||1, pref_max_days:form.pref_max_days||5, vacation_days_per_year:form.vacation_days_per_year||25,
-          vacation_days_per_year:form.vacation_days_per_year||25,
         }).select().single()
 
         // Send invite email via Edge Function
@@ -2330,9 +2354,14 @@ function ZiekteTab({ allStaff, currentSchedule, currentWeek, shiftTemplates, org
   async function approveClaimShift(openShiftId, staffId) {
     const os = openShifts.find(x => x.id === openShiftId)
     if (!os) return
-    // Assign to new staff
-    const { data: roster } = await supabase.from('rosters')
-      .select('id').eq('org_id', orgId).eq('week_start', currentWeek.monday).single()
+    // Find the roster that covers the open shift's date (not the currently viewed week)
+    const { data: allRosters } = await supabase.from('rosters')
+      .select('id, week_start').eq('org_id', orgId)
+    const roster = (allRosters || []).find(r => {
+      const weekEnd = new Date(r.week_start)
+      weekEnd.setDate(weekEnd.getDate() + 6)
+      return os.date >= r.week_start && os.date <= weekEnd.toISOString().slice(0, 10)
+    })
     if (roster) {
       await supabase.from('roster_assignments').upsert({
         roster_id: roster.id, staff_id: staffId,
