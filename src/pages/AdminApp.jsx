@@ -404,9 +404,12 @@ export default function AdminApp() {
       // Gepubliceerde weken NOOIT overschrijven (bijv. randweek al live)
       const existing = rosters[week.monday]
       if (existing?.status === 'published') continue
-      // In automatische modus: bestaande concepten ook overslaan
-      // (handmatige aanpassingen blijven behouden; OT zit al in overtimeLog)
-      if (skipExisting && existing) continue
+      // In automatische modus: bestaande concepten met diensten overslaan,
+      // maar LEGE concept-roosters wél (opnieuw) vullen.
+      const existingHasShifts = existing &&
+        assignments[week.monday] &&
+        Object.values(assignments[week.monday]).some(arr => arr.some(Boolean))
+      if (skipExisting && existingHasShifts) continue
 
       const result = generateSchedule({
         staff: allStaff,
@@ -428,9 +431,15 @@ export default function AdminApp() {
       // Carry this week's cumulative overtime into the next week's calculation
       runningOT = { ...runningOT, ...result.weekOT }
 
-      const { data: roster } = await supabase.from('rosters').upsert({
+      const { data: roster, error: rosErr } = await supabase.from('rosters').upsert({
         org_id: orgId, week_start: week.monday, status: 'concept',
       }, { onConflict: 'org_id,week_start' }).select().single()
+      if (rosErr || !roster) {
+        setGenerating(false)
+        show('Fout bij aanmaken rooster: ' + (rosErr?.message || 'onbekend'))
+        console.error('roster upsert error:', rosErr)
+        return
+      }
 
       await supabase.from('roster_assignments').delete().eq('roster_id', roster.id)
 
@@ -443,7 +452,15 @@ export default function AdminApp() {
         })
       })
       const toInsert = Object.values(weekMap)
-      if (toInsert.length) await supabase.from('roster_assignments').insert(toInsert)
+      if (toInsert.length) {
+        const { error: insErr } = await supabase.from('roster_assignments').insert(toInsert)
+        if (insErr) {
+          setGenerating(false)
+          show('Fout bij opslaan diensten: ' + insErr.message)
+          console.error('roster_assignments insert error:', insErr)
+          return
+        }
+      }
 
       // Save overtime log (same as single week)
       const otInserts = Object.entries(result.weekOT).map(([staffId, ot]) => {
