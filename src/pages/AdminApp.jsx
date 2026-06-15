@@ -377,6 +377,7 @@ export default function AdminApp() {
 
   // ── Generate full month ────────────────────────────────────────────────────
   async function handleGenerateMonth(skipExisting = false) {
+    if (!orgId) { show('Organisatie niet geladen — herlaad de pagina'); return }
     const now = new Date()
     // Use UTC to avoid timezone issues (Netherlands = UTC+1/+2)
     const nextMonthYear = now.getUTCMonth() === 11 ? now.getUTCFullYear() + 1 : now.getUTCFullYear()
@@ -520,6 +521,8 @@ export default function AdminApp() {
 
   // ── Generate schedule ────────────────────────────────────────────────────
   async function handleGenerate() {
+    if (!orgId) { show('Organisatie niet geladen — herlaad de pagina'); return }
+    if (!currentWeek) { show('Week niet geladen — herlaad de pagina'); return }
     if (!templateSlots.length) { show('Voeg eerst diensten toe aan de template'); return }
     // Alleen waarschuwen als het bestaande rooster ÉCHT diensten bevat
     // (een leeg concept-rooster mag zonder vraag overschreven worden).
@@ -546,9 +549,15 @@ export default function AdminApp() {
       })
 
       // Upsert roster
-      const { data: roster } = await supabase.from('rosters').upsert({
+      const { data: roster, error: rosErr } = await supabase.from('rosters').upsert({
         org_id: orgId, week_start: currentWeek.monday, status: 'concept',
       }, { onConflict: 'org_id,week_start' }).select().single()
+      if (rosErr || !roster) {
+        setGenerating(false)
+        show('Fout bij aanmaken rooster: ' + (rosErr?.message || 'geen toegang of rij niet teruggegeven'))
+        console.error('roster upsert error:', rosErr)
+        return
+      }
 
       // Delete old assignments for this week
       await supabase.from('roster_assignments').delete().eq('roster_id', roster.id)
