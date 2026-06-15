@@ -521,7 +521,11 @@ export default function AdminApp() {
   // ── Generate schedule ────────────────────────────────────────────────────
   async function handleGenerate() {
     if (!templateSlots.length) { show('Voeg eerst diensten toe aan de template'); return }
-    if (currentRoster && !window.confirm('Er bestaat al een rooster voor deze week. Overschrijven?')) return
+    // Alleen waarschuwen als het bestaande rooster ÉCHT diensten bevat
+    // (een leeg concept-rooster mag zonder vraag overschreven worden).
+    const currentHasShifts = currentSchedule &&
+      Object.values(currentSchedule).some(arr => arr.some(Boolean))
+    if (currentHasShifts && !window.confirm('Er bestaat al een rooster voor deze week. Overschrijven?')) return
     setGenerating(true)
     try {
       const result = generateSchedule({
