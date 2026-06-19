@@ -6,7 +6,7 @@ import { C, DEPTS, Badge, Card, Avatar, Toast, WeekNav, btn, getWeekDates, getMo
 function getWeeks() {
   const weeks = []
   const now = new Date()
-  const startStr = getMondayOfWeek(new Date(now.getFullYear(), now.getMonth() - 1, 1))
+  const startStr = getMondayOfWeek(new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth() - 1, 1)))
   const [sy, sm, sd] = startStr.split('-').map(Number)
   for (let i = 0; i < 12; i++) {
     const mon = new Date(Date.UTC(sy, sm - 1, sd + i * 7))
@@ -489,15 +489,14 @@ function AvailabilityEditor({ patterns, overrides, onSavePattern, onSaveOverride
   const [multiSlots, setMultiSlots] = useState(7) // for multi-select
   const SLOTS = ['Ochtend', 'Middag', 'Avond']
 
-  // Get next 6 weeks of dates for calendar
+  // Get next 6 weeks of dates for calendar (UTC-based to avoid date drift)
   const calendarDates = (() => {
     const dates = []
     const now = new Date()
-    const start = new Date(now)
-    start.setDate(now.getDate() - now.getDay() + 1) // Monday
+    const dow = (now.getUTCDay() + 6) % 7 // 0 = Monday
+    const start = new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), now.getUTCDate() - dow))
     for (let i = 0; i < 42; i++) {
-      const d = new Date(start)
-      d.setDate(start.getDate() + i)
+      const d = new Date(Date.UTC(start.getUTCFullYear(), start.getUTCMonth(), start.getUTCDate() + i))
       dates.push(d.toISOString().split('T')[0])
     }
     return dates
