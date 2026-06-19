@@ -79,6 +79,21 @@ export default function AdminApp() {
 
   const show = msg => { setToast(msg); setTimeout(() => setToast(null), 3000) }
 
+  // Run a Supabase write and surface errors instead of failing silently.
+  // Supabase never throws on query errors — it returns { error }. Without this,
+  // a failed delete/insert/update looks successful (often with a ✓ toast).
+  // Returns true on success, false on error.
+  async function run(query, okMsg) {
+    const { error } = await query
+    if (error) {
+      console.error('Supabase write error:', error)
+      show('⚠️ ' + (error.message || 'Opslaan mislukt'))
+      return false
+    }
+    if (okMsg) show(okMsg)
+    return true
+  }
+
   // ── Email reminder via Resend ───────────────────────────────────────────────
   async function sendReminderEmails() {
     if (!settings.resend_api_key) { show('Stel eerst de Resend API key in bij Instellingen'); return }
@@ -513,8 +528,10 @@ export default function AdminApp() {
       show('Gepubliceerd rooster kan niet verwijderd worden — trek publicatie eerst in')
       return
     }
-    await supabase.from('roster_assignments').delete().eq('roster_id', roster.id)
-    await supabase.from('rosters').delete().eq('id', roster.id)
+    const okA = await run(supabase.from('roster_assignments').delete().eq('roster_id', roster.id))
+    if (!okA) return
+    const okR = await run(supabase.from('rosters').delete().eq('id', roster.id))
+    if (!okR) return
     await loadAssignments()
     show('✓ Rooster verwijderd — je kunt nu opnieuw genereren')
   }
@@ -560,7 +577,8 @@ export default function AdminApp() {
       }
 
       // Delete old assignments for this week
-      await supabase.from('roster_assignments').delete().eq('roster_id', roster.id)
+      const okDel = await run(supabase.from('roster_assignments').delete().eq('roster_id', roster.id))
+      if (!okDel) { setGenerating(false); return }
 
       // Insert new assignments - dedup by staff_id+date to prevent duplicates
       const insertMap = {}
@@ -575,7 +593,17 @@ export default function AdminApp() {
         })
       })
       const toInsert = Object.values(insertMap)
-      if (toInsert.length) await supabase.from('roster_assignments').insert(toInsert)
+      if (toInsert.length) {
+        const okIns = await run(supabase.from('roster_assignments').insert(toInsert))
+        if (!okIns) {
+          // Delete succeeded but insert failed — week is now empty. Tell the user
+          // explicitly so they re-generate instead of trusting an empty roster.
+          show('⚠️ Diensten niet opgeslagen — rooster is leeg, genereer opnieuw')
+          setGenerating(false)
+          await loadAssignments()
+          return
+        }
+      }
 
       // Save overtime log
       const otInserts = Object.entries(result.weekOT).map(([staffId, ot]) => {
@@ -688,14 +716,16 @@ export default function AdminApp() {
           if (toAsgn) await supabase.from('roster_assignments').delete().eq('id', toAsgn.id)
 
           // Re-insert swapped
-          if (fromAsgn) await supabase.from('roster_assignments').insert({
+          let swapOk = true
+          if (fromAsgn) swapOk = await run(supabase.from('roster_assignments').insert({
             roster_id: roster.id, staff_id: sw.to_staff_id,
             date: sw.from_date, shift_name: fromAsgn.shift_name
-          })
-          if (toAsgn) await supabase.from('roster_assignments').insert({
+          })) && swapOk
+          if (toAsgn) swapOk = await run(supabase.from('roster_assignments').insert({
             roster_id: roster.id, staff_id: sw.from_staff_id,
             date: sw.to_date, shift_name: toAsgn.shift_name
-          })
+          })) && swapOk
+          if (!swapOk) show('⚠️ Ruil deels mislukt — controleer het rooster')
         }
       }
     }
