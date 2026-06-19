@@ -137,21 +137,18 @@ export const btn = (overrides={}) => ({
   fontFamily:'inherit', transition:'all .18s', ...overrides,
 })
 
-// Week utilities
+// Week utilities — all UTC-based to avoid local-time/DST date drift.
 export function getWeekDates(mondayDate) {
-  const d = new Date(mondayDate)
-  return Array.from({ length:7 }, (_, i) => {
-    const day = new Date(d)
-    day.setDate(d.getDate() + i)
-    return day.toISOString().split('T')[0]
-  })
+  const [y, m, d] = String(mondayDate).slice(0, 10).split('-').map(Number)
+  return Array.from({ length: 7 }, (_, i) =>
+    new Date(Date.UTC(y, m - 1, d + i)).toISOString().split('T')[0])
 }
 
 export function getMondayOfWeek(date = new Date()) {
   const d = new Date(date)
-  const day = d.getDay()
-  const diff = (day === 0 ? -6 : 1 - day)
-  d.setDate(d.getDate() + diff)
+  const day = (d.getUTCDay() + 6) % 7 // 0 = Monday … 6 = Sunday
+  d.setUTCDate(d.getUTCDate() - day)
+  d.setUTCHours(0, 0, 0, 0)
   return d.toISOString().split('T')[0]
 }
 
