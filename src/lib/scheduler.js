@@ -309,12 +309,13 @@ export function generateSchedule({
           const days = schedule[s.id].filter(Boolean).length
           return days < (s.pref_max_days || settings.max_days_per_week || 5)
         })
-        const finalPool = withinPref.length >= slot.count ? withinPref : pool
+        const finalPool = withinPref.length >= slotRemaining ? withinPref : pool
 
-        // Assign up to slot.count staff members
+        // Assign up to slotRemaining staff members (slot.count minus any already
+        // placed by fixed assignments) to avoid overstaffing the slot.
         let assigned = 0
         finalPool.forEach(s => {
-          if (assigned >= slot.count) return
+          if (assigned >= slotRemaining) return
           schedule[s.id][di] = slot.shift_name
           hoursPlanned[s.id] += shiftDuration
           lastShiftEnd[s.id] = shift.end_time
